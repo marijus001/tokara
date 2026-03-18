@@ -23,7 +23,7 @@ import (
 	"github.com/marijus001/tokara/internal/stats"
 )
 
-const version = "0.1.3"
+const version = "0.1.4"
 
 func main() {
 	port := flag.Int("port", 0, "override proxy port")
@@ -156,8 +156,11 @@ func runServer(cfg config.Config) {
 	fmt.Printf("  Proxy:    %s\n", addr)
 	fmt.Printf("  Health:   %s/health\n", "http://"+addr)
 	fmt.Println()
-	fmt.Println("  Ctrl+C to stop")
+	fmt.Println("  Press \033[1mh\033[0m + enter for help, \033[1mq\033[0m + enter to quit")
 	fmt.Println()
+
+	// Interactive command handler
+	go handleInteractive(cfg, store, collector, p, server)
 
 	if err := server.ListenAndServe(); err != http.ErrServerClosed {
 		log.Fatalf("  ✗ server error: %v", err)
@@ -250,5 +253,83 @@ func printHelp() {
 	fmt.Println("    tokara index .    Index codebase for RAG (paid)")
 	fmt.Println("    tokara help       Show this help")
 	fmt.Println("    tokara --version  Print version")
+	fmt.Println()
+}
+
+func handleInteractive(cfg config.Config, store *session.Store, collector *stats.Collector, p *proxy.Proxy, server *http.Server) {
+	scanner := bufio.NewScanner(os.Stdin)
+	for scanner.Scan() {
+		cmd := strings.TrimSpace(strings.ToLower(scanner.Text()))
+		switch cmd {
+		case "h", "help":
+			printInteractiveHelp()
+		case "s", "stats":
+			printRunningStats(collector, p, store)
+		case "c", "config":
+			printRunningConfig(cfg)
+		case "q", "quit":
+			fmt.Println("\n  Stopping proxy...")
+			server.Close()
+			return
+		case "":
+			// ignore empty lines
+		default:
+			fmt.Printf("  Unknown command: %s (press h + enter for help)\n", cmd)
+		}
+	}
+}
+
+func printInteractiveHelp() {
+	fmt.Println()
+	fmt.Println("  Commands:")
+	fmt.Println("    h   Show this help")
+	fmt.Println("    s   Show proxy stats")
+	fmt.Println("    c   Show running config")
+	fmt.Println("    q   Stop proxy and exit")
+	fmt.Println()
+}
+
+func printRunningStats(collector *stats.Collector, p *proxy.Proxy, store *session.Store) {
+	snap := collector.BuildSnapshot(
+		p.Stats.Requests.Load(),
+		p.Stats.Compactions.Load(),
+		p.Stats.TokensSaved.Load(),
+		store.Count(),
+	)
+	fmt.Println()
+	fmt.Printf("  \033[1;38;2;225;29;72m▓\033[0m \033[1mtokara\033[0m stats\n")
+	fmt.Println()
+	fmt.Printf("  Uptime:       %s\n", snap.Uptime)
+	fmt.Printf("  Requests:     %d\n", snap.Requests)
+	fmt.Printf("  Compactions:  %d\n", snap.Compactions)
+	fmt.Printf("  Tokens saved: %d\n", snap.TokensSaved)
+	fmt.Printf("  Sessions:     %d\n", snap.Sessions)
+	if len(snap.RecentEvents) > 0 {
+		fmt.Println()
+		fmt.Println("  Recent:")
+		for _, e := range snap.RecentEvents {
+			fmt.Printf("    %s  %s/%s  %s  %dk→%dk", e.Timestamp, e.Provider, e.Model, e.Action, e.InputK, e.OutputK)
+			if e.SavedPct > 0 {
+				fmt.Printf("  (%d%% saved)", e.SavedPct)
+			}
+			fmt.Println()
+		}
+	}
+	fmt.Println()
+}
+
+func printRunningConfig(cfg config.Config) {
+	fmt.Println()
+	fmt.Printf("  \033[1;38;2;225;29;72m▓\033[0m \033[1mtokara\033[0m config\n")
+	fmt.Println()
+	fmt.Printf("  Port:       %d\n", cfg.Port)
+	fmt.Printf("  Compact at: %.0f%% of context window\n", cfg.CompactionThreshold*100)
+	fmt.Printf("  Precomp at: %.0f%% of context window\n", cfg.PrecomputeThreshold*100)
+	fmt.Printf("  Keep turns: %d\n", cfg.PreserveRecentTurns)
+	if cfg.HasAPIKey() {
+		fmt.Printf("  Mode:       paid\n")
+	} else {
+		fmt.Printf("  Mode:       free (local only)\n")
+	}
 	fmt.Println()
 }
