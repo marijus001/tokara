@@ -2,6 +2,7 @@ package config
 
 import (
 	"bufio"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -101,4 +102,24 @@ func (c *Config) ApplyEnv() {
 
 func (c *Config) HasAPIKey() bool {
 	return strings.HasPrefix(c.APIKey, "tk_live_") || strings.HasPrefix(c.APIKey, "tk_test_")
+}
+
+func (c Config) SaveFile(path string) error {
+	dir := filepath.Dir(path)
+	os.MkdirAll(dir, 0755)
+
+	var lines []string
+	lines = append(lines, fmt.Sprintf("port = %d", c.Port))
+	if c.APIKey != "" {
+		lines = append(lines, fmt.Sprintf("api_key = \"%s\"", c.APIKey))
+	}
+	if c.APIBase != "" && c.APIBase != "https://api.tokara.dev" {
+		lines = append(lines, fmt.Sprintf("api_base = \"%s\"", c.APIBase))
+	}
+	lines = append(lines, fmt.Sprintf("compaction_threshold = %.2f", c.CompactionThreshold))
+	lines = append(lines, fmt.Sprintf("precompute_threshold = %.2f", c.PrecomputeThreshold))
+	lines = append(lines, fmt.Sprintf("preserve_recent_turns = %d", c.PreserveRecentTurns))
+	lines = append(lines, "")
+
+	return os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0600)
 }

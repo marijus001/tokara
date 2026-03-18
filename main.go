@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -23,7 +24,7 @@ import (
 	"github.com/marijus001/tokara/internal/stats"
 )
 
-const version = "0.1.4"
+const version = "0.1.5"
 
 func main() {
 	port := flag.Int("port", 0, "override proxy port")
@@ -160,7 +161,7 @@ func runServer(cfg config.Config) {
 	fmt.Println()
 
 	// Interactive command handler
-	go handleInteractive(cfg, store, collector, p, server)
+	go handleInteractive(config.DefaultPath(), store, collector, p, server)
 
 	if err := server.ListenAndServe(); err != http.ErrServerClosed {
 		log.Fatalf("  ✗ server error: %v", err)
@@ -256,17 +257,26 @@ func printHelp() {
 	fmt.Println()
 }
 
-func handleInteractive(cfg config.Config, store *session.Store, collector *stats.Collector, p *proxy.Proxy, server *http.Server) {
+func handleInteractive(configPath string, store *session.Store, collector *stats.Collector, p *proxy.Proxy, server *http.Server) {
 	scanner := bufio.NewScanner(os.Stdin)
 	for scanner.Scan() {
-		cmd := strings.TrimSpace(strings.ToLower(scanner.Text()))
+		line := strings.TrimSpace(scanner.Text())
+		parts := strings.SplitN(line, " ", 2)
+		cmd := strings.ToLower(parts[0])
+		args := ""
+		if len(parts) > 1 {
+			args = strings.TrimSpace(parts[1])
+		}
+
 		switch cmd {
 		case "h", "help":
 			printInteractiveHelp()
 		case "s", "stats":
 			printRunningStats(collector, p, store)
 		case "c", "config":
-			printRunningConfig(cfg)
+			printRunningConfig(configPath)
+		case "set":
+			handleSet(args, configPath)
 		case "q", "quit":
 			fmt.Println("\n  Stopping proxy...")
 			server.Close()
@@ -282,10 +292,13 @@ func handleInteractive(cfg config.Config, store *session.Store, collector *stats
 func printInteractiveHelp() {
 	fmt.Println()
 	fmt.Println("  Commands:")
-	fmt.Println("    h   Show this help")
-	fmt.Println("    s   Show proxy stats")
-	fmt.Println("    c   Show running config")
-	fmt.Println("    q   Stop proxy and exit")
+	fmt.Println("    h              Show this help")
+	fmt.Println("    s              Show proxy stats")
+	fmt.Println("    c              Show running config")
+	fmt.Println("    set <key> <v>  Change a config value")
+	fmt.Println("    q              Stop proxy and exit")
+	fmt.Println()
+	fmt.Println("  Type 'set' to see available config keys")
 	fmt.Println()
 }
 
@@ -318,18 +331,106 @@ func printRunningStats(collector *stats.Collector, p *proxy.Proxy, store *sessio
 	fmt.Println()
 }
 
-func printRunningConfig(cfg config.Config) {
+func printRunningConfig(configPath string) {
+	cfg, err := config.LoadFile(configPath)
+	if err != nil {
+		fmt.Printf("  ✗ Could not read config: %v\n", err)
+		return
+	}
 	fmt.Println()
-	fmt.Printf("  \033[1;38;2;225;29;72m▓\033[0m \033[1mtokara\033[0m config\n")
+	fmt.Printf("  \033[1;38;2;225;29;72m▓\033[0m \033[1mtokara\033[0m config (%s)\n", configPath)
 	fmt.Println()
 	fmt.Printf("  Port:       %d\n", cfg.Port)
 	fmt.Printf("  Compact at: %.0f%% of context window\n", cfg.CompactionThreshold*100)
 	fmt.Printf("  Precomp at: %.0f%% of context window\n", cfg.PrecomputeThreshold*100)
 	fmt.Printf("  Keep turns: %d\n", cfg.PreserveRecentTurns)
 	if cfg.HasAPIKey() {
+		fmt.Printf("  API key:    %s...%s\n", cfg.APIKey[:10], cfg.APIKey[len(cfg.APIKey)-4:])
 		fmt.Printf("  Mode:       paid\n")
 	} else {
 		fmt.Printf("  Mode:       free (local only)\n")
 	}
+	fmt.Println()
+}
+
+func handleSet(args string, configPath string) {
+	if args == "" {
+		printSetHelp()
+		return
+	}
+
+	parts := strings.SplitN(args, " ", 2)
+	if len(parts) < 2 {
+		printSetHelp()
+		return
+	}
+	key := strings.ToLower(parts[0])
+	val := strings.TrimSpace(parts[1])
+
+	cfg, err := config.LoadFile(configPath)
+	if err != nil {
+		cfg = config.Defaults()
+	}
+
+	switch key {
+	case "port":
+		v, err := strconv.Atoi(val)
+		if err != nil || v < 1 || v > 65535 {
+			fmt.Println("  ✗ Invalid port (1-65535)")
+			return
+		}
+		cfg.Port = v
+	case "compact":
+		v, err := strconv.ParseFloat(val, 64)
+		if err != nil {
+			fmt.Println("  ✗ Invalid threshold (use 0.0-1.0 or 0-100)")
+			return
+		}
+		if v > 1 {
+			v = v / 100
+		}
+		cfg.CompactionThreshold = v
+	case "precompute":
+		v, err := strconv.ParseFloat(val, 64)
+		if err != nil {
+			fmt.Println("  ✗ Invalid threshold (use 0.0-1.0 or 0-100)")
+			return
+		}
+		if v > 1 {
+			v = v / 100
+		}
+		cfg.PrecomputeThreshold = v
+	case "turns":
+		v, err := strconv.Atoi(val)
+		if err != nil || v < 0 {
+			fmt.Println("  ✗ Invalid turn count")
+			return
+		}
+		cfg.PreserveRecentTurns = v
+	case "apikey":
+		cfg.APIKey = val
+	default:
+		fmt.Printf("  ✗ Unknown key: %s\n", key)
+		printSetHelp()
+		return
+	}
+
+	if err := cfg.SaveFile(configPath); err != nil {
+		fmt.Printf("  ✗ Failed to save: %v\n", err)
+		return
+	}
+	fmt.Printf("  ✓ %s updated (restart proxy to apply)\n", key)
+}
+
+func printSetHelp() {
+	fmt.Println()
+	fmt.Println("  Usage: set <key> <value>")
+	fmt.Println()
+	fmt.Println("  Keys:")
+	fmt.Println("    port        Proxy port (default: 18741)")
+	fmt.Println("    compact     Compaction threshold 0.0-1.0 (default: 0.80)")
+	fmt.Println("    precompute  Precompute threshold 0.0-1.0 (default: 0.60)")
+	fmt.Println("    turns       Preserve recent turns (default: 4)")
+	fmt.Println("    apikey      Tokara API key")
 	fmt.Println()
 }
