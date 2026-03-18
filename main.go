@@ -17,6 +17,7 @@ import (
 	"github.com/marijus001/tokara/internal/compactor"
 	"github.com/marijus001/tokara/internal/config"
 	tkctx "github.com/marijus001/tokara/internal/context"
+	"github.com/marijus001/tokara/internal/detect"
 	"github.com/marijus001/tokara/internal/proxy"
 	"github.com/marijus001/tokara/internal/session"
 	"github.com/marijus001/tokara/internal/setup"
@@ -24,7 +25,7 @@ import (
 	"github.com/marijus001/tokara/internal/tui"
 )
 
-const version = "0.1.8"
+const version = "0.1.9"
 
 func main() {
 	// Prevent charmbracelet/colorprofile from querying terminal (can hang when spawned from npx)
@@ -163,18 +164,67 @@ func runServer(cfg config.Config) {
 		}
 	}()
 
-	// Snapshot provider for the TUI
-	getSnapshot := func() stats.Snapshot {
-		return collector.BuildSnapshot(
-			p.Stats.Requests.Load(),
-			p.Stats.Compactions.Load(),
-			p.Stats.TokensSaved.Load(),
-			store.Count(),
-		)
+	// Callbacks for the TUI
+	cb := tui.Callbacks{
+		GetSnapshot: func() stats.Snapshot {
+			return collector.BuildSnapshot(
+				p.Stats.Requests.Load(),
+				p.Stats.Compactions.Load(),
+				p.Stats.TokensSaved.Load(),
+				store.Count(),
+			)
+		},
+		GetConfig: func() string {
+			c, err := config.LoadFile(config.DefaultPath())
+			if err != nil {
+				return "  Could not read config\n"
+			}
+			s := fmt.Sprintf("  Port:       %d\n", c.Port)
+			s += fmt.Sprintf("  Compact at: %.0f%% of context window\n", c.CompactionThreshold*100)
+			s += fmt.Sprintf("  Precomp at: %.0f%% of context window\n", c.PrecomputeThreshold*100)
+			s += fmt.Sprintf("  Keep turns: %d\n", c.PreserveRecentTurns)
+			if c.HasAPIKey() {
+				s += fmt.Sprintf("  API key:    %s...%s\n", c.APIKey[:10], c.APIKey[len(c.APIKey)-4:])
+			}
+			s += fmt.Sprintf("  File:       %s\n", config.DefaultPath())
+			return s
+		},
+		GetTools: func() string {
+			gatewayURL := fmt.Sprintf("http://127.0.0.1:%d", cfg.Port)
+			allTools := detect.AllTools(gatewayURL)
+			detected := detect.DetectAll(allTools)
+			var s string
+			for _, t := range allTools {
+				found := false
+				for _, d := range detected {
+					if d.ID == t.ID {
+						found = true
+						break
+					}
+				}
+				if found {
+					s += fmt.Sprintf("  \033[32m●\033[0m %s — %s\n", t.Name, t.Desc)
+				} else {
+					s += fmt.Sprintf("    %s — %s (not found)\n", t.Name, t.Desc)
+				}
+			}
+			return s
+		},
+		SaveAPIKey: func(key string) error {
+			if !strings.HasPrefix(key, "tk_live_") && !strings.HasPrefix(key, "tk_test_") {
+				return fmt.Errorf("invalid key — must start with tk_live_ or tk_test_")
+			}
+			c, err := config.LoadFile(config.DefaultPath())
+			if err != nil {
+				c = config.Defaults()
+			}
+			c.APIKey = key
+			return c.SaveFile(config.DefaultPath())
+		},
 	}
 
 	// Run live TUI dashboard
-	model := tui.NewLiveModel(getSnapshot, version, addr, mode)
+	model := tui.NewLiveModel(cb, version, addr, mode)
 	program := tea.NewProgram(model, tea.WithAltScreen())
 	if _, err := program.Run(); err != nil {
 		log.Fatalf("  ✗ TUI error: %v", err)
