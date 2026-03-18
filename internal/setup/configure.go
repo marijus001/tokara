@@ -271,12 +271,13 @@ func UnconfigureTool(tool detect.Tool) error {
 		backup := tool.ConfigPath + ".tokara-backup"
 		data, err := os.ReadFile(backup)
 		if err != nil {
-			return fmt.Errorf("no backup found at %s", backup)
+			// No backup = tokara created this file from scratch. Delete it.
+			os.Remove(tool.ConfigPath)
+			return nil
 		}
 		if err := os.WriteFile(tool.ConfigPath, data, 0600); err != nil {
 			return fmt.Errorf("failed to restore %s: %w", tool.ConfigPath, err)
 		}
-		// Remove the backup file after successful restore
 		os.Remove(backup)
 		return nil
 
