@@ -1,4 +1,4 @@
-module github.com/tokaradev/tokara
+module github.com/marijus001/tokara
 
 go 1.26.1
 
