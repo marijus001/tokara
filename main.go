@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -25,7 +26,7 @@ import (
 	"github.com/marijus001/tokara/internal/tui"
 )
 
-const version = "0.1.9"
+const version = "0.2.0"
 
 func main() {
 	// Prevent charmbracelet/colorprofile from querying terminal (can hang when spawned from npx)
@@ -174,41 +175,104 @@ func runServer(cfg config.Config) {
 				store.Count(),
 			)
 		},
-		GetConfig: func() string {
+		GetConfig: func() []tui.ConfigItem {
 			c, err := config.LoadFile(config.DefaultPath())
 			if err != nil {
-				return "  Could not read config\n"
+				c = config.Defaults()
 			}
-			s := fmt.Sprintf("  Port:       %d\n", c.Port)
-			s += fmt.Sprintf("  Compact at: %.0f%% of context window\n", c.CompactionThreshold*100)
-			s += fmt.Sprintf("  Precomp at: %.0f%% of context window\n", c.PrecomputeThreshold*100)
-			s += fmt.Sprintf("  Keep turns: %d\n", c.PreserveRecentTurns)
+			apiVal := "(none)"
 			if c.HasAPIKey() {
-				s += fmt.Sprintf("  API key:    %s...%s\n", c.APIKey[:10], c.APIKey[len(c.APIKey)-4:])
+				apiVal = c.APIKey[:10] + "..." + c.APIKey[len(c.APIKey)-4:]
 			}
-			s += fmt.Sprintf("  File:       %s\n", config.DefaultPath())
-			return s
+			return []tui.ConfigItem{
+				{Key: "Port", Value: fmt.Sprintf("%d", c.Port), Field: "port"},
+				{Key: "Compaction threshold", Value: fmt.Sprintf("%.0f%%", c.CompactionThreshold*100), Field: "compact"},
+				{Key: "Precompute threshold", Value: fmt.Sprintf("%.0f%%", c.PrecomputeThreshold*100), Field: "precompute"},
+				{Key: "Preserve turns", Value: fmt.Sprintf("%d", c.PreserveRecentTurns), Field: "turns"},
+				{Key: "API key", Value: apiVal, Field: "apikey"},
+			}
 		},
-		GetTools: func() string {
+		SaveConfig: func(field, value string) error {
+			c, err := config.LoadFile(config.DefaultPath())
+			if err != nil {
+				c = config.Defaults()
+			}
+			switch field {
+			case "port":
+				v, err := strconv.Atoi(value)
+				if err != nil || v < 1 || v > 65535 {
+					return fmt.Errorf("invalid port (1-65535)")
+				}
+				c.Port = v
+			case "compact":
+				s := strings.TrimSuffix(value, "%")
+				v, err := strconv.ParseFloat(s, 64)
+				if err != nil || v < 0 || v > 100 {
+					return fmt.Errorf("invalid threshold (0-100)")
+				}
+				c.CompactionThreshold = v / 100
+			case "precompute":
+				s := strings.TrimSuffix(value, "%")
+				v, err := strconv.ParseFloat(s, 64)
+				if err != nil || v < 0 || v > 100 {
+					return fmt.Errorf("invalid threshold (0-100)")
+				}
+				c.PrecomputeThreshold = v / 100
+			case "turns":
+				v, err := strconv.Atoi(value)
+				if err != nil || v < 0 {
+					return fmt.Errorf("invalid turns (0+)")
+				}
+				c.PreserveRecentTurns = v
+			case "apikey":
+				if value == "(none)" || value == "" {
+					c.APIKey = ""
+				} else {
+					c.APIKey = value
+				}
+			default:
+				return fmt.Errorf("unknown field: %s", field)
+			}
+			return c.SaveFile(config.DefaultPath())
+		},
+		GetTools: func() []tui.ToolItem {
 			gatewayURL := fmt.Sprintf("http://127.0.0.1:%d", cfg.Port)
 			allTools := detect.AllTools(gatewayURL)
-			detected := detect.DetectAll(allTools)
-			var s string
+			var items []tui.ToolItem
 			for _, t := range allTools {
-				found := false
-				for _, d := range detected {
-					if d.ID == t.ID {
-						found = true
-						break
-					}
+				detected := detect.Detect(t)
+				enabled := false
+				if detected {
+					enabled = setup.IsToolConfigured(t, gatewayURL)
 				}
-				if found {
-					s += fmt.Sprintf("  \033[32m●\033[0m %s — %s\n", t.Name, t.Desc)
-				} else {
-					s += fmt.Sprintf("    %s — %s (not found)\n", t.Name, t.Desc)
+				canToggle := detected && t.ConfigType != detect.ConfigNote
+				items = append(items, tui.ToolItem{
+					ID:        t.ID,
+					Name:      t.Name,
+					Desc:      t.Desc,
+					Detected:  detected,
+					Enabled:   enabled,
+					CanToggle: canToggle,
+				})
+			}
+			return items
+		},
+		ToggleTool: func(id string, enable bool) error {
+			gatewayURL := fmt.Sprintf("http://127.0.0.1:%d", cfg.Port)
+			allTools := detect.AllTools(gatewayURL)
+			for _, t := range allTools {
+				if t.ID == id {
+					if enable {
+						result := setup.ConfigureTool(t, gatewayURL)
+						if !result.Success {
+							return fmt.Errorf("%s", result.Details)
+						}
+						return nil
+					}
+					return setup.UnconfigureTool(t)
 				}
 			}
-			return s
+			return fmt.Errorf("tool %q not found", id)
 		},
 		SaveAPIKey: func(key string) error {
 			if !strings.HasPrefix(key, "tk_live_") && !strings.HasPrefix(key, "tk_test_") {

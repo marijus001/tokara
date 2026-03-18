@@ -235,6 +235,59 @@ func Unconfigure(tool detect.Tool) error {
 	return os.WriteFile(profile, []byte(strings.Join(cleaned, "\n")), 0644)
 }
 
+// IsToolConfigured checks if a tool is currently configured to use the tokara gateway.
+func IsToolConfigured(tool detect.Tool, gatewayURL string) bool {
+	switch tool.ConfigType {
+	case detect.ConfigEnv:
+		profile := detect.ShellProfile()
+		data, err := os.ReadFile(profile)
+		if err != nil {
+			return false
+		}
+		content := string(data)
+		return strings.Contains(content, "# Tokara proxy") &&
+			strings.Contains(content, tool.Name) &&
+			strings.Contains(content, gatewayURL)
+
+	case detect.ConfigFile:
+		data, err := os.ReadFile(tool.ConfigPath)
+		if err != nil {
+			return false
+		}
+		return strings.Contains(string(data), gatewayURL)
+
+	default:
+		return false
+	}
+}
+
+// UnconfigureTool restores a tool's original configuration by removing tokara settings.
+func UnconfigureTool(tool detect.Tool) error {
+	switch tool.ConfigType {
+	case detect.ConfigEnv:
+		return Unconfigure(tool)
+
+	case detect.ConfigFile:
+		backup := tool.ConfigPath + ".tokara-backup"
+		data, err := os.ReadFile(backup)
+		if err != nil {
+			return fmt.Errorf("no backup found at %s", backup)
+		}
+		if err := os.WriteFile(tool.ConfigPath, data, 0600); err != nil {
+			return fmt.Errorf("failed to restore %s: %w", tool.ConfigPath, err)
+		}
+		// Remove the backup file after successful restore
+		os.Remove(backup)
+		return nil
+
+	case detect.ConfigNote:
+		return fmt.Errorf("%s cannot be automatically configured", tool.Name)
+
+	default:
+		return fmt.Errorf("unknown config type for %s", tool.Name)
+	}
+}
+
 // DiffPreview returns a string showing what changes will be made.
 func DiffPreview(tool detect.Tool, gatewayURL string) string {
 	switch tool.ConfigType {

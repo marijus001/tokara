@@ -12,6 +12,7 @@ import (
 )
 
 type liveTickMsg time.Time
+type configSavedMsg struct{}
 
 type panel int
 
@@ -23,11 +24,30 @@ const (
 	panelUpgrade              // API key input
 )
 
+// ConfigItem represents a single editable configuration field.
+type ConfigItem struct {
+	Key   string // display name (e.g. "Port")
+	Value string // current display value
+	Field string // internal field name for saving (e.g. "port")
+}
+
+// ToolItem represents a tool's state for the interactive tools panel.
+type ToolItem struct {
+	ID        string
+	Name      string
+	Desc      string
+	Detected  bool
+	Enabled   bool
+	CanToggle bool // false for ConfigNote types or not-found tools
+}
+
 // Callbacks provides data to the TUI without importing other packages.
 type Callbacks struct {
 	GetSnapshot func() stats.Snapshot
-	GetConfig   func() string
-	GetTools    func() string
+	GetConfig   func() []ConfigItem // returns structured config items
+	SaveConfig  func(field, value string) error
+	GetTools    func() []ToolItem
+	ToggleTool  func(id string, enable bool) error
 	SaveAPIKey  func(key string) error
 }
 
@@ -42,6 +62,19 @@ type LiveModel struct {
 	activePanel  panel
 	upgradeInput string
 	upgradeMsg   string
+
+	// Config panel state
+	configCursor  int
+	configEditing bool
+	configInput   string
+	configItems   []ConfigItem
+	configMsg     string // success/error after save
+
+	// Tools panel state
+	toolsCursor int
+	toolsList   []ToolItem
+	toolsLoaded bool
+	toolsMsg    string
 
 	quitting bool
 	width    int
@@ -95,6 +128,124 @@ func (m LiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
+		// Config panel input mode
+		if m.activePanel == panelConfig {
+			if m.configEditing {
+				switch msg.Type {
+				case tea.KeyEsc:
+					m.configEditing = false
+					m.configInput = ""
+				case tea.KeyEnter:
+					if m.configCursor >= 0 && m.configCursor < len(m.configItems) {
+						field := m.configItems[m.configCursor].Field
+						if err := m.cb.SaveConfig(field, m.configInput); err != nil {
+							m.configMsg = fmt.Sprintf("  \u2717 %v", err)
+						} else {
+							m.configMsg = "  \u2713 saved"
+							m.configItems = m.cb.GetConfig()
+						}
+						m.configEditing = false
+						m.configInput = ""
+						return m, clearConfigMsgAfter()
+					}
+				case tea.KeyBackspace:
+					if len(m.configInput) > 0 {
+						m.configInput = m.configInput[:len(m.configInput)-1]
+					}
+				default:
+					if msg.Type == tea.KeyRunes {
+						m.configInput += string(msg.Runes)
+					}
+				}
+				return m, nil
+			}
+
+			// Config panel navigation (not editing)
+			switch msg.Type {
+			case tea.KeyUp:
+				if m.configCursor > 0 {
+					m.configCursor--
+				}
+				return m, nil
+			case tea.KeyDown:
+				if m.configCursor < len(m.configItems)-1 {
+					m.configCursor++
+				}
+				return m, nil
+			case tea.KeyEnter:
+				if m.configCursor >= 0 && m.configCursor < len(m.configItems) {
+					m.configEditing = true
+					// Pre-fill with the raw value (strip trailing % for display)
+					m.configInput = m.configItems[m.configCursor].Value
+					m.configMsg = ""
+				}
+				return m, nil
+			case tea.KeyEsc:
+				m.activePanel = panelLogs
+				m.configEditing = false
+				m.configMsg = ""
+				return m, nil
+			}
+		}
+
+		// Tools panel interactive mode
+		if m.activePanel == panelTools {
+			switch msg.String() {
+			case "up", "k":
+				if m.toolsCursor > 0 {
+					m.toolsCursor--
+				}
+				return m, nil
+			case "down", "j":
+				if m.toolsCursor < len(m.toolsList)-1 {
+					m.toolsCursor++
+				}
+				return m, nil
+			case " ":
+				if m.toolsCursor >= 0 && m.toolsCursor < len(m.toolsList) {
+					item := m.toolsList[m.toolsCursor]
+					if item.CanToggle {
+						newEnabled := !item.Enabled
+						if m.cb.ToggleTool != nil {
+							if err := m.cb.ToggleTool(item.ID, newEnabled); err != nil {
+								m.toolsMsg = fmt.Sprintf("  \u2717 %v", err)
+							} else {
+								m.toolsMsg = ""
+								m.refreshTools()
+							}
+						}
+					}
+				}
+				return m, nil
+			case "esc":
+				m.activePanel = panelLogs
+				m.toolsMsg = ""
+				return m, nil
+			case "q", "ctrl+c":
+				m.quitting = true
+				return m, tea.Quit
+			case "l":
+				m.activePanel = panelLogs
+				m.toolsMsg = ""
+			case "c":
+				m.activePanel = panelConfig
+				m.configItems = m.cb.GetConfig()
+				m.configCursor = 0
+				m.configEditing = false
+				m.configMsg = ""
+				m.toolsMsg = ""
+			case "h":
+				m.activePanel = panelHelp
+				m.toolsMsg = ""
+			case "u":
+				m.activePanel = panelUpgrade
+				m.upgradeInput = ""
+				m.upgradeMsg = ""
+				m.toolsMsg = ""
+			}
+			return m, nil
+		}
+
 		// Normal mode
 		switch msg.String() {
 		case "q", "ctrl+c":
@@ -107,12 +258,17 @@ func (m LiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.activePanel = panelLogs
 			} else {
 				m.activePanel = panelConfig
+				m.configItems = m.cb.GetConfig()
+				m.configCursor = 0
+				m.configEditing = false
+				m.configMsg = ""
 			}
 		case "t":
 			if m.activePanel == panelTools {
 				m.activePanel = panelLogs
 			} else {
 				m.activePanel = panelTools
+				m.refreshTools()
 			}
 		case "h":
 			if m.activePanel == panelHelp {
@@ -132,12 +288,32 @@ func (m LiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 
+	case configSavedMsg:
+		m.configMsg = ""
+
 	case liveTickMsg:
 		m.snapshot = m.cb.GetSnapshot()
+		// Refresh tools list periodically if panel is active
+		if m.activePanel == panelTools {
+			m.refreshTools()
+		}
 		return m, liveTickCmd()
 	}
 
 	return m, nil
+}
+
+func (m *LiveModel) refreshTools() {
+	if m.cb.GetTools != nil {
+		m.toolsList = m.cb.GetTools()
+		m.toolsLoaded = true
+		if m.toolsCursor >= len(m.toolsList) {
+			m.toolsCursor = len(m.toolsList) - 1
+		}
+		if m.toolsCursor < 0 {
+			m.toolsCursor = 0
+		}
+	}
 }
 
 func (m LiveModel) View() string {
@@ -225,9 +401,18 @@ func (m LiveModel) View() string {
 
 	// ── Footer ──
 
-	if m.activePanel == panelUpgrade {
+	switch {
+	case m.activePanel == panelUpgrade:
 		b.WriteString(fmt.Sprintf("  %s\n", helpStyle.Render("[enter] save  [esc] cancel")))
-	} else {
+	case m.activePanel == panelConfig && m.configEditing:
+		b.WriteString(fmt.Sprintf("  %s\n", helpStyle.Render("[enter] save  [esc] cancel")))
+	case m.activePanel == panelConfig:
+		b.WriteString(fmt.Sprintf("  %s\n", helpStyle.Render("[\u2191/\u2193] move  [enter] edit  [esc] back")))
+	case m.activePanel == panelTools:
+		b.WriteString(fmt.Sprintf("  %s\n",
+			helpStyle.Render("[\u2191/\u2193] move  [space] toggle  [esc] back  [q] quit"),
+		))
+	default:
 		b.WriteString(fmt.Sprintf("  %s\n",
 			helpStyle.Render("[h] help  [c] config  [t] tools  [l] logs  [u] upgrade  [q] quit"),
 		))
@@ -296,23 +481,109 @@ func (m LiveModel) renderConfig() string {
 	var b strings.Builder
 	b.WriteString("\n")
 	b.WriteString(fmt.Sprintf("  %s\n\n", labelStyle.Render("Configuration:")))
-	if m.cb.GetConfig != nil {
-		b.WriteString(m.cb.GetConfig())
+
+	cursorStyle := lipgloss.NewStyle().Foreground(rose).Bold(true)
+	keyStyle := lipgloss.NewStyle().Foreground(muted)
+	valStyle := lipgloss.NewStyle().Foreground(white).Bold(true)
+	inputCursor := lipgloss.NewStyle().Foreground(rose).Render("\u2588")
+
+	for i, item := range m.configItems {
+		prefix := "   "
+		if i == m.configCursor {
+			prefix = cursorStyle.Render(" > ")
+		}
+
+		// Pad key to align values
+		paddedKey := fmt.Sprintf("%-24s", item.Key)
+
+		if m.configEditing && i == m.configCursor {
+			b.WriteString(fmt.Sprintf("%s%s%s%s\n",
+				prefix,
+				keyStyle.Render(paddedKey),
+				valStyle.Render(m.configInput),
+				inputCursor,
+			))
+		} else {
+			b.WriteString(fmt.Sprintf("%s%s%s\n",
+				prefix,
+				keyStyle.Render(paddedKey),
+				valStyle.Render(item.Value),
+			))
+		}
 	}
+
 	b.WriteString("\n")
-	b.WriteString(fmt.Sprintf("  %s\n", helpStyle.Render("Edit: ~/.tokara/config.toml  ·  Press [esc] to go back")))
+	b.WriteString(fmt.Sprintf("  %s\n", helpStyle.Render("~/.tokara/config.toml")))
+
+	if m.configMsg != "" {
+		b.WriteString(fmt.Sprintf("%s\n", m.configMsg))
+	}
+
 	return b.String()
 }
 
 func (m LiveModel) renderTools() string {
 	var b strings.Builder
 	b.WriteString("\n")
-	b.WriteString(fmt.Sprintf("  %s\n\n", labelStyle.Render("Detected AI Tools:")))
-	if m.cb.GetTools != nil {
-		b.WriteString(m.cb.GetTools())
+	b.WriteString(fmt.Sprintf("  %s\n\n", labelStyle.Render("AI Tools:")))
+
+	greenDot := lipgloss.NewStyle().Foreground(lipgloss.Color("#22c55e"))
+	enabledTag := lipgloss.NewStyle().Foreground(lipgloss.Color("#22c55e"))
+	readyTag := lipgloss.NewStyle().Foreground(lipgloss.Color("#eab308"))
+	notFoundTag := lipgloss.NewStyle().Foreground(dimmed)
+	infoTag := lipgloss.NewStyle().Foreground(dimmed).Italic(true)
+	nameActive := lipgloss.NewStyle().Foreground(white).Bold(true)
+	nameDim := lipgloss.NewStyle().Foreground(muted)
+	descStyle := lipgloss.NewStyle().Foreground(muted)
+	cursorStyle := lipgloss.NewStyle().Foreground(rose).Bold(true)
+
+	if !m.toolsLoaded || len(m.toolsList) == 0 {
+		b.WriteString(fmt.Sprintf("  %s\n", labelStyle.Render("Loading...")))
+		return b.String()
 	}
-	b.WriteString("\n")
-	b.WriteString(fmt.Sprintf("  %s\n", helpStyle.Render("Run 'tokara setup' to configure  ·  Press [esc] to go back")))
+
+	for i, item := range m.toolsList {
+		// Cursor
+		cursor := "  "
+		if i == m.toolsCursor {
+			cursor = cursorStyle.Render("> ")
+		}
+
+		// Dot indicator
+		dot := "  "
+		if item.Detected {
+			dot = greenDot.Render("\u25cf") + " "
+		}
+
+		// Tool name (bright if detected, dim if not)
+		name := nameDim.Render(fmt.Sprintf("%-22s", item.Name))
+		if item.Detected {
+			name = nameActive.Render(fmt.Sprintf("%-22s", item.Name))
+		}
+
+		// Description
+		desc := descStyle.Render(fmt.Sprintf("%-36s", item.Desc))
+
+		// Status tag
+		var tag string
+		if item.Enabled {
+			tag = enabledTag.Render("[enabled]")
+		} else if item.Detected && item.CanToggle {
+			tag = readyTag.Render("[ready]")
+		} else if item.Detected && !item.CanToggle {
+			tag = infoTag.Render("(info only)")
+		} else {
+			tag = notFoundTag.Render("(not found)")
+		}
+
+		b.WriteString(fmt.Sprintf("  %s%s%s  %s  %s\n", cursor, dot, name, desc, tag))
+	}
+
+	if m.toolsMsg != "" {
+		b.WriteString("\n")
+		b.WriteString(fmt.Sprintf("  %s\n", m.toolsMsg))
+	}
+
 	return b.String()
 }
 
@@ -327,7 +598,7 @@ func (m LiveModel) renderHelp() string {
 	cmds := []struct{ key, desc string }{
 		{"h", "Show this help"},
 		{"c", "Show running config"},
-		{"t", "Detect installed AI tools"},
+		{"t", "Manage AI tool integrations"},
 		{"l", "Live activity log (default view)"},
 		{"u", "Add/update API key"},
 		{"q", "Stop proxy and exit"},
@@ -384,5 +655,11 @@ func (m LiveModel) renderUpgrade() string {
 func liveTickCmd() tea.Cmd {
 	return tea.Tick(time.Second, func(t time.Time) tea.Msg {
 		return liveTickMsg(t)
+	})
+}
+
+func clearConfigMsgAfter() tea.Cmd {
+	return tea.Tick(2*time.Second, func(t time.Time) tea.Msg {
+		return configSavedMsg{}
 	})
 }
