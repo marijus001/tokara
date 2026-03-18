@@ -1,0 +1,8 @@
+# Build output
+tokara
+tokara.exe
+dist/
+
+# Test artifacts
+*.test
+coverage.out
