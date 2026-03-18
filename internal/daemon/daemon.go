@@ -81,9 +81,7 @@ func Start(binaryPath string, port int) (int, error) {
 	cmd := exec.Command(binaryPath, "--daemon-child", "--port", strconv.Itoa(port))
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
-	cmd.SysProcAttr = &syscall.SysProcAttr{
-		Setsid: true, // Detach from terminal
-	}
+	setSysProcAttr(cmd)
 
 	if err := cmd.Start(); err != nil {
 		logFile.Close()
