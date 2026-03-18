@@ -25,7 +25,7 @@ import (
 	"github.com/marijus001/tokara/internal/stats"
 )
 
-const version = "0.1.6"
+const version = "0.1.7"
 
 func main() {
 	// Prevent charmbracelet/colorprofile from querying terminal (can hang when spawned from npx)
@@ -68,11 +68,20 @@ func main() {
 		}
 	}
 
-	// First run: setup wizard if no config exists
+	// Load config — create default on first run
 	cfg, err := config.LoadFile(config.DefaultPath())
 	if err != nil {
-		setup.RunWizard(version)
-		cfg, _ = config.LoadFile(config.DefaultPath())
+		// First run: create default config and start immediately.
+		// The interactive wizard (tokara setup) can be run later.
+		cfg = config.Defaults()
+		if saveErr := cfg.SaveFile(config.DefaultPath()); saveErr == nil {
+			fmt.Println()
+			fmt.Printf("  \033[1;38;2;225;29;72m▓\033[0m \033[1mtokara\033[0m — first run\n")
+			fmt.Println()
+			fmt.Printf("  Created config at %s\n", config.DefaultPath())
+			fmt.Println("  Run \033[1mtokara setup\033[0m to configure your AI tools")
+			fmt.Println()
+		}
 	}
 	cfg.ApplyEnv()
 
