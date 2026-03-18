@@ -4,6 +4,7 @@ package cli
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -105,6 +106,10 @@ func runStart(version string, defaultPort int) {
 
 	fmt.Printf("  %s Proxy started on localhost:%d (pid %d)\n", ok.Render("✓"), port, newPid)
 	fmt.Printf("  %s Run %s to see live stats\n", dim.Render(" "), info.Render("`tokara status`"))
+	// Hint about PATH if binary is in ~/.tokara/bin
+	if strings.Contains(executable, ".tokara") {
+		fmt.Printf("  %s Add to PATH: %s\n", dim.Render(" "), info.Render(filepath.Dir(executable)))
+	}
 	fmt.Println()
 }
 

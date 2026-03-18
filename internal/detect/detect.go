@@ -78,7 +78,7 @@ func AllTools(gatewayURL string) []Tool {
 func Detect(tool Tool) bool {
 	switch tool.ID {
 	case "claude":
-		return cmdExists("claude")
+		return cmdExists("claude") || cmdExists("claude.cmd") || claudeInstalledWindows()
 	case "codex":
 		return cmdExists("codex") || cmdExists("openai")
 	case "openclaw":
@@ -141,6 +141,25 @@ func cmdExists(name string) bool {
 func fileExists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
+}
+
+func claudeInstalledWindows() bool {
+	if runtime.GOOS != "windows" {
+		return false
+	}
+	home, _ := os.UserHomeDir()
+	// Check common Windows install locations
+	paths := []string{
+		filepath.Join(home, "AppData", "Local", "Programs", "claude", "claude.exe"),
+		filepath.Join(home, "AppData", "Roaming", "npm", "claude.cmd"),
+		filepath.Join(home, "AppData", "Roaming", "npm", "claude"),
+	}
+	for _, p := range paths {
+		if fileExists(p) {
+			return true
+		}
+	}
+	return false
 }
 
 func copilotInstalled() bool {

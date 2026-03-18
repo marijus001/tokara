@@ -102,7 +102,14 @@ func configureFile(tool detect.Tool, gatewayURL string) ConfigResult {
 func patchOpenClaw(configPath, gatewayURL string) ConfigResult {
 	existing, err := os.ReadFile(configPath)
 	if err != nil {
-		return ConfigResult{Tool: "OpenClaw", Success: false, Details: fmt.Sprintf("Cannot read %s: %v", configPath, err)}
+		// Config file doesn't exist — create it
+		dir := filepath.Dir(configPath)
+		os.MkdirAll(dir, 0755)
+		content := fmt.Sprintf("api_base: %s\n", gatewayURL)
+		if err := os.WriteFile(configPath, []byte(content), 0600); err != nil {
+			return ConfigResult{Tool: "OpenClaw", Success: false, Details: fmt.Sprintf("Cannot create %s: %v", configPath, err)}
+		}
+		return ConfigResult{Tool: "OpenClaw", Success: true, Details: fmt.Sprintf("Created %s", configPath)}
 	}
 
 	// Backup
@@ -139,7 +146,21 @@ func patchOpenClaw(configPath, gatewayURL string) ConfigResult {
 func patchOpenCode(configPath, gatewayURL string) ConfigResult {
 	existing, err := os.ReadFile(configPath)
 	if err != nil {
-		return ConfigResult{Tool: "OpenCode", Success: false, Details: fmt.Sprintf("Cannot read %s: %v", configPath, err)}
+		// Config file doesn't exist — create it
+		dir := filepath.Dir(configPath)
+		os.MkdirAll(dir, 0755)
+		config := map[string]interface{}{
+			"providers": map[string]interface{}{
+				"default": map[string]interface{}{
+					"apiBase": gatewayURL,
+				},
+			},
+		}
+		data, _ := json.MarshalIndent(config, "", "  ")
+		if err := os.WriteFile(configPath, data, 0600); err != nil {
+			return ConfigResult{Tool: "OpenCode", Success: false, Details: fmt.Sprintf("Cannot create %s: %v", configPath, err)}
+		}
+		return ConfigResult{Tool: "OpenCode", Success: true, Details: fmt.Sprintf("Created %s", configPath)}
 	}
 
 	// Backup
