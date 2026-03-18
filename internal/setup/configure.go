@@ -2,7 +2,6 @@
 package setup
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -92,8 +91,6 @@ func configureFile(tool detect.Tool, gatewayURL string) ConfigResult {
 	switch tool.ID {
 	case "openclaw":
 		return patchOpenClaw(configPath, gatewayURL)
-	case "opencode":
-		return patchOpenCode(configPath, gatewayURL)
 	default:
 		return ConfigResult{Tool: tool.Name, Success: false, Details: "no patch function for this tool"}
 	}
@@ -143,67 +140,6 @@ func patchOpenClaw(configPath, gatewayURL string) ConfigResult {
 	}
 }
 
-func patchOpenCode(configPath, gatewayURL string) ConfigResult {
-	existing, err := os.ReadFile(configPath)
-	if err != nil {
-		// Config file doesn't exist — create it
-		dir := filepath.Dir(configPath)
-		os.MkdirAll(dir, 0755)
-		config := map[string]interface{}{
-			"providers": map[string]interface{}{
-				"default": map[string]interface{}{
-					"apiBase": gatewayURL,
-				},
-			},
-		}
-		data, _ := json.MarshalIndent(config, "", "  ")
-		if err := os.WriteFile(configPath, data, 0600); err != nil {
-			return ConfigResult{Tool: "OpenCode", Success: false, Details: fmt.Sprintf("Cannot create %s: %v", configPath, err)}
-		}
-		return ConfigResult{Tool: "OpenCode", Success: true, Details: fmt.Sprintf("Created %s", configPath)}
-	}
-
-	// Backup
-	backup := configPath + ".tokara-backup"
-	os.WriteFile(backup, existing, 0600)
-
-	var config map[string]interface{}
-	if err := json.Unmarshal(existing, &config); err != nil {
-		return ConfigResult{Tool: "OpenCode", Success: false, Details: fmt.Sprintf("Invalid JSON: %v", err)}
-	}
-
-	// Set the provider base URL
-	if providers, ok := config["providers"].(map[string]interface{}); ok {
-		for name, p := range providers {
-			if prov, ok := p.(map[string]interface{}); ok {
-				prov["apiBase"] = gatewayURL
-				providers[name] = prov
-			}
-		}
-	} else {
-		config["providers"] = map[string]interface{}{
-			"default": map[string]interface{}{
-				"apiBase": gatewayURL,
-			},
-		}
-	}
-
-	data, err := json.MarshalIndent(config, "", "  ")
-	if err != nil {
-		return ConfigResult{Tool: "OpenCode", Success: false, Details: fmt.Sprintf("Marshal error: %v", err)}
-	}
-
-	if err := os.WriteFile(configPath, data, 0600); err != nil {
-		return ConfigResult{Tool: "OpenCode", Success: false, Details: fmt.Sprintf("Write error: %v", err)}
-	}
-
-	return ConfigResult{
-		Tool:    "OpenCode",
-		Success: true,
-		Details: fmt.Sprintf("Patched %s", configPath),
-		Backup:  backup,
-	}
-}
 
 // Unconfigure removes Tokara configuration for env-based tools.
 func Unconfigure(tool detect.Tool) error {
