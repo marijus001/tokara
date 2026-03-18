@@ -12,21 +12,18 @@ import (
 	"time"
 
 	"github.com/marijus001/tokara/internal/api"
-	"github.com/marijus001/tokara/internal/cli"
 	"github.com/marijus001/tokara/internal/compactor"
 	"github.com/marijus001/tokara/internal/config"
 	tkctx "github.com/marijus001/tokara/internal/context"
-	"github.com/marijus001/tokara/internal/daemon"
 	"github.com/marijus001/tokara/internal/proxy"
 	"github.com/marijus001/tokara/internal/session"
+	"github.com/marijus001/tokara/internal/setup"
 	"github.com/marijus001/tokara/internal/stats"
 )
 
 const version = "0.1.0"
 
 func main() {
-	// Check for --daemon-child flag (started by daemon.Start)
-	daemonChild := flag.Bool("daemon-child", false, "run as daemon child process")
 	port := flag.Int("port", 0, "override proxy port")
 	showVersion := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
@@ -36,31 +33,36 @@ func main() {
 		os.Exit(0)
 	}
 
-	// If not daemon-child, route to CLI commands
-	if !*daemonChild {
-		cli.Run(version, flag.Args())
-		return
+	// Handle subcommands
+	args := flag.Args()
+	if len(args) > 0 {
+		switch args[0] {
+		case "setup":
+			setup.RunWizard(version)
+			return
+		case "help", "--help", "-h":
+			printHelp()
+			return
+		}
 	}
 
-	// ── Daemon child mode: run the proxy server ──
-	runServer(*port)
-}
-
-func runServer(portOverride int) {
+	// First run: setup wizard if no config exists
 	cfg, err := config.LoadFile(config.DefaultPath())
-	if err != nil && !os.IsNotExist(err) {
-		log.Fatalf("config error: %v", err)
+	if err != nil {
+		setup.RunWizard(version)
+		cfg, _ = config.LoadFile(config.DefaultPath())
 	}
 	cfg.ApplyEnv()
 
-	if portOverride > 0 {
-		cfg.Port = portOverride
+	if *port > 0 {
+		cfg.Port = *port
 	}
 
-	// Write PID file
-	daemon.WritePid(os.Getpid())
+	// Run the proxy in the foreground
+	runServer(cfg)
+}
 
-	// Session store + compactor
+func runServer(cfg config.Config) {
 	store := session.NewStore()
 
 	// Periodic session cleanup
@@ -85,12 +87,8 @@ func runServer(portOverride int) {
 	if cfg.HasAPIKey() {
 		client := api.NewClient(cfg.APIBase, cfg.APIKey)
 		ctxSource = tkctx.NewCloudSource(client)
-		log.Printf("context source: cloud (%s)", cfg.APIBase)
-	} else {
-		log.Println("context source: none (free tier)")
 	}
 
-	// Stats collector
 	collector := stats.NewCollector(50)
 
 	p := proxy.New(proxy.Options{
@@ -100,7 +98,6 @@ func runServer(portOverride int) {
 
 	mux := http.NewServeMux()
 
-	// Health endpoint
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		mode := "free"
@@ -112,7 +109,6 @@ func runServer(portOverride int) {
 		})
 	})
 
-	// Stats endpoint (for TUI)
 	mux.HandleFunc("/stats", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		snap := collector.BuildSnapshot(p.Stats.Requests.Load(), p.Stats.Compactions.Load(), p.Stats.TokensSaved.Load(), store.Count())
@@ -120,19 +116,16 @@ func runServer(portOverride int) {
 		w.Write(data)
 	})
 
-	// Proxy handler
 	mux.Handle("/", p)
 
 	addr := fmt.Sprintf("127.0.0.1:%d", cfg.Port)
 	server := &http.Server{Addr: addr, Handler: mux}
 
-	// Graceful shutdown
 	go func() {
 		sigCh := make(chan os.Signal, 1)
 		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 		<-sigCh
-		log.Println("shutting down...")
-		daemon.RemovePid()
+		fmt.Println("\n  Stopping proxy...")
 		server.Close()
 	}()
 
@@ -140,10 +133,30 @@ func runServer(portOverride int) {
 	if cfg.HasAPIKey() {
 		mode = "paid"
 	}
-	log.Printf("tokara proxy v%s listening on %s (mode: %s, pid: %d)", version, addr, mode, os.Getpid())
+
+	fmt.Println()
+	fmt.Printf("  \033[1;38;2;225;29;72m▓\033[0m \033[1mtokara\033[0m v%s — proxy running\n", version)
+	fmt.Println()
+	fmt.Printf("  Mode:     %s\n", mode)
+	fmt.Printf("  Proxy:    %s\n", addr)
+	fmt.Printf("  Health:   %s/health\n", "http://"+addr)
+	fmt.Println()
+	fmt.Println("  Ctrl+C to stop")
+	fmt.Println()
 
 	if err := server.ListenAndServe(); err != http.ErrServerClosed {
-		daemon.RemovePid()
-		log.Fatalf("server error: %v", err)
+		log.Fatalf("  ✗ server error: %v", err)
 	}
+}
+
+func printHelp() {
+	fmt.Println()
+	fmt.Printf("  \033[1;38;2;225;29;72m▓\033[0m \033[1mtokara\033[0m v%s — context compression for LLMs\n", version)
+	fmt.Println()
+	fmt.Println("  Commands:")
+	fmt.Println("    tokara          Start the proxy (foreground)")
+	fmt.Println("    tokara setup    Run setup wizard again")
+	fmt.Println("    tokara help     Show this help")
+	fmt.Println("    tokara --version")
+	fmt.Println()
 }
