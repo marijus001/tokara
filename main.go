@@ -17,6 +17,7 @@ import (
 	"github.com/marijus001/tokara/internal/api"
 	"github.com/marijus001/tokara/internal/compactor"
 	"github.com/marijus001/tokara/internal/config"
+	"github.com/marijus001/tokara/internal/detect"
 	tkctx "github.com/marijus001/tokara/internal/context"
 	"github.com/marijus001/tokara/internal/proxy"
 	"github.com/marijus001/tokara/internal/session"
@@ -24,9 +25,14 @@ import (
 	"github.com/marijus001/tokara/internal/stats"
 )
 
-const version = "0.1.5"
+const version = "0.1.6"
 
 func main() {
+	// Prevent charmbracelet/colorprofile from querying terminal (can hang when spawned from npx)
+	if os.Getenv("COLORTERM") == "" {
+		os.Setenv("COLORTERM", "truecolor")
+	}
+
 	port := flag.Int("port", 0, "override proxy port")
 	showVersion := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
@@ -277,6 +283,19 @@ func handleInteractive(configPath string, store *session.Store, collector *stats
 			printRunningConfig(configPath)
 		case "set":
 			handleSet(args, configPath)
+		case "u", "upgrade":
+			fmt.Print("  Enter your Tokara API key: ")
+			if scanner.Scan() {
+				handleUpgrade(strings.TrimSpace(scanner.Text()), configPath)
+			}
+		case "t", "tools":
+			printDetectedTools(configPath)
+		case "setup":
+			fmt.Println()
+			fmt.Println("  To re-run setup, stop the proxy (q) and run: tokara setup")
+			fmt.Println()
+		case "l", "logs":
+			printRecentLogs(collector, p, store)
 		case "q", "quit":
 			fmt.Println("\n  Stopping proxy...")
 			server.Close()
@@ -296,6 +315,9 @@ func printInteractiveHelp() {
 	fmt.Println("    s              Show proxy stats")
 	fmt.Println("    c              Show running config")
 	fmt.Println("    set <key> <v>  Change a config value")
+	fmt.Println("    u              Add/update API key")
+	fmt.Println("    t              Show detected AI tools")
+	fmt.Println("    l              Show recent request logs")
 	fmt.Println("    q              Stop proxy and exit")
 	fmt.Println()
 	fmt.Println("  Type 'set' to see available config keys")
@@ -432,5 +454,85 @@ func printSetHelp() {
 	fmt.Println("    precompute  Precompute threshold 0.0-1.0 (default: 0.60)")
 	fmt.Println("    turns       Preserve recent turns (default: 4)")
 	fmt.Println("    apikey      Tokara API key")
+	fmt.Println()
+}
+
+func handleUpgrade(key, configPath string) {
+	if key == "" {
+		fmt.Println("  ✗ No key provided")
+		return
+	}
+	if !strings.HasPrefix(key, "tk_live_") && !strings.HasPrefix(key, "tk_test_") {
+		fmt.Println("  ✗ Invalid key — must start with tk_live_ or tk_test_")
+		return
+	}
+	cfg, err := config.LoadFile(configPath)
+	if err != nil {
+		cfg = config.Defaults()
+	}
+	cfg.APIKey = key
+	if err := cfg.SaveFile(configPath); err != nil {
+		fmt.Printf("  ✗ Failed to save: %v\n", err)
+		return
+	}
+	fmt.Println("  ✓ API key saved — restart proxy to enable paid features")
+}
+
+func printDetectedTools(configPath string) {
+	cfg, err := config.LoadFile(configPath)
+	if err != nil {
+		cfg = config.Defaults()
+	}
+	gatewayURL := fmt.Sprintf("http://127.0.0.1:%d", cfg.Port)
+	allTools := detect.AllTools(gatewayURL)
+	detected := detect.DetectAll(allTools)
+
+	fmt.Println()
+	fmt.Printf("  \033[1;38;2;225;29;72m▓\033[0m \033[1mtokara\033[0m tools\n")
+	fmt.Println()
+	for _, t := range allTools {
+		found := false
+		for _, d := range detected {
+			if d.ID == t.ID {
+				found = true
+				break
+			}
+		}
+		if found {
+			fmt.Printf("  \033[32m●\033[0m %s — %s\n", t.Name, t.Desc)
+		} else {
+			fmt.Printf("    %s — %s \033[2m(not found)\033[0m\n", t.Name, t.Desc)
+		}
+	}
+	fmt.Println()
+	if len(detected) == 0 {
+		fmt.Println("  No AI tools detected.")
+	} else {
+		fmt.Printf("  %d tool(s) detected. Run 'tokara setup' to configure.\n", len(detected))
+	}
+	fmt.Println()
+}
+
+func printRecentLogs(collector *stats.Collector, p *proxy.Proxy, store *session.Store) {
+	snap := collector.BuildSnapshot(
+		p.Stats.Requests.Load(),
+		p.Stats.Compactions.Load(),
+		p.Stats.TokensSaved.Load(),
+		store.Count(),
+	)
+	fmt.Println()
+	if len(snap.RecentEvents) == 0 {
+		fmt.Println("  No recent events")
+	} else {
+		fmt.Printf("  \033[1;38;2;225;29;72m▓\033[0m \033[1mtokara\033[0m logs (last %d)\n", len(snap.RecentEvents))
+		fmt.Println()
+		for _, e := range snap.RecentEvents {
+			fmt.Printf("  %s  %-10s %-20s %s  %dk→%dk", e.Timestamp, e.Provider, e.Model, e.Action, e.InputK, e.OutputK)
+			if e.SavedPct > 0 {
+				fmt.Printf("  (%d%% saved)", e.SavedPct)
+			}
+			fmt.Println()
+		}
+	}
 	fmt.Println()
 }
