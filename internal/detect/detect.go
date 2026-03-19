@@ -61,9 +61,8 @@ func AllTools(gatewayURL string) []Tool {
 			ID:         "opencode",
 			Name:       "OpenCode",
 			Desc:       "Terminal-based AI coding assistant",
-			ConfigType: ConfigEnv,
-			EnvVars:    map[string]string{"OPENAI_BASE_URL": gatewayURL},
-			KeyVar:     "OPENAI_API_KEY",
+			ConfigType: ConfigFile,
+			ConfigPath: filepath.Join(home, ".config", "opencode", "opencode.json"),
 		},
 		{
 			ID:         "copilot",

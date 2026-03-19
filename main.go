@@ -27,7 +27,7 @@ import (
 	"github.com/marijus001/tokara/internal/tui"
 )
 
-const version = "0.3.7"
+const version = "0.3.8"
 
 func main() {
 	// Prevent charmbracelet/colorprofile from querying terminal (can hang when spawned from npx)

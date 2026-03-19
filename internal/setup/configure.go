@@ -2,6 +2,7 @@
 package setup
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -129,6 +130,8 @@ func configureFile(tool detect.Tool, gatewayURL string) ConfigResult {
 	switch tool.ID {
 	case "openclaw":
 		return patchOpenClaw(configPath, gatewayURL)
+	case "opencode":
+		return patchOpenCode(configPath, gatewayURL)
 	default:
 		return ConfigResult{Tool: tool.Name, Success: false, Details: "no patch function for this tool"}
 	}
@@ -178,6 +181,61 @@ func patchOpenClaw(configPath, gatewayURL string) ConfigResult {
 	}
 }
 
+
+func patchOpenCode(configPath, gatewayURL string) ConfigResult {
+	existing, err := os.ReadFile(configPath)
+
+	// Parse existing config or start fresh
+	var config map[string]interface{}
+	if err == nil {
+		// Backup existing
+		backup := configPath + ".tokara-backup"
+		os.WriteFile(backup, existing, 0600)
+
+		if jsonErr := json.Unmarshal(existing, &config); jsonErr != nil {
+			config = make(map[string]interface{})
+		}
+	} else {
+		config = make(map[string]interface{})
+		os.MkdirAll(filepath.Dir(configPath), 0755)
+	}
+
+	// Set provider baseURLs to route through proxy
+	// OpenCode uses provider.<name>.options.baseURL
+	providerBlock := map[string]interface{}{
+		"anthropic": map[string]interface{}{
+			"options": map[string]interface{}{"baseURL": gatewayURL},
+		},
+		"openai": map[string]interface{}{
+			"options": map[string]interface{}{"baseURL": gatewayURL},
+		},
+	}
+
+	// Merge with existing providers if any
+	if existing, ok := config["provider"].(map[string]interface{}); ok {
+		for name, p := range providerBlock {
+			existing[name] = p
+		}
+	} else {
+		config["provider"] = providerBlock
+	}
+
+	data, _ := json.MarshalIndent(config, "", "  ")
+	if writeErr := os.WriteFile(configPath, data, 0600); writeErr != nil {
+		return ConfigResult{Tool: "OpenCode", Success: false, Details: fmt.Sprintf("Write error: %v", writeErr)}
+	}
+
+	backup := ""
+	if err == nil {
+		backup = configPath + ".tokara-backup"
+	}
+	return ConfigResult{
+		Tool:    "OpenCode",
+		Success: true,
+		Details: fmt.Sprintf("Patched %s (provider.*.options.baseURL)", configPath),
+		Backup:  backup,
+	}
+}
 
 // Unconfigure removes Tokara configuration for env-based tools.
 func Unconfigure(tool detect.Tool) error {
