@@ -26,7 +26,7 @@ import (
 	"github.com/marijus001/tokara/internal/tui"
 )
 
-const version = "0.2.2"
+const version = "0.3.0"
 
 func main() {
 	// Prevent charmbracelet/colorprofile from querying terminal (can hang when spawned from npx)
@@ -62,6 +62,9 @@ func main() {
 			return
 		case "config":
 			runConfig()
+			return
+		case "test":
+			runSelfTest()
 			return
 		case "help", "--help", "-h":
 			printHelp()
@@ -382,6 +385,7 @@ func printHelp() {
 	fmt.Println("    tokara config     Show current configuration")
 	fmt.Println("    tokara upgrade    Add API key for paid features")
 	fmt.Println("    tokara index .    Index codebase for RAG (paid)")
+	fmt.Println("    tokara test       Run self-diagnostics")
 	fmt.Println("    tokara help       Show this help")
 	fmt.Println("    tokara --version  Print version")
 	fmt.Println()
