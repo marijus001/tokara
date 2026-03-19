@@ -175,25 +175,34 @@ func patchOpenCode(configPath, gatewayURL string) ConfigResult {
 		os.MkdirAll(filepath.Dir(configPath), 0755)
 	}
 
-	// Set provider baseURLs to route through proxy
-	// OpenCode uses provider.<name>.options.baseURL
-	providerBlock := map[string]interface{}{
-		"anthropic": map[string]interface{}{
-			"options": map[string]interface{}{"baseURL": gatewayURL},
-		},
-		"openai": map[string]interface{}{
-			"options": map[string]interface{}{"baseURL": gatewayURL},
-		},
+	// Set provider baseURLs to route through proxy.
+	// OpenCode uses provider.<name>.options.baseURL.
+	// Patch ALL known providers so any model routes through the proxy.
+	proxyURL := gatewayURL + "/v1" // OpenCode expects /v1 suffix
+	providers := []string{
+		"anthropic", "openai", "google", "openrouter",
+		"groq", "mistral", "fireworks", "together", "deepseek",
+		"xai", "moonshot", "minimax",
 	}
 
-	// Merge with existing providers if any
-	if existing, ok := config["provider"].(map[string]interface{}); ok {
-		for name, p := range providerBlock {
-			existing[name] = p
-		}
-	} else {
-		config["provider"] = providerBlock
+	providerBlock, ok := config["provider"].(map[string]interface{})
+	if !ok {
+		providerBlock = make(map[string]interface{})
 	}
+	for _, name := range providers {
+		entry, ok := providerBlock[name].(map[string]interface{})
+		if !ok {
+			entry = make(map[string]interface{})
+		}
+		opts, ok := entry["options"].(map[string]interface{})
+		if !ok {
+			opts = make(map[string]interface{})
+		}
+		opts["baseURL"] = proxyURL
+		entry["options"] = opts
+		providerBlock[name] = entry
+	}
+	config["provider"] = providerBlock
 
 	data, _ := json.MarshalIndent(config, "", "  ")
 	if writeErr := os.WriteFile(configPath, data, 0600); writeErr != nil {
