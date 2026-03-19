@@ -1,4 +1,4 @@
-# tokara
+# ▓ tokara
 
 Context compression for AI coding tools — a local proxy with smart auto-compaction and a live TUI dashboard.
 
