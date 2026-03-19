@@ -108,13 +108,13 @@ func AllTools(gatewayURL string) []Tool {
 func Detect(tool Tool) bool {
 	switch tool.ID {
 	case "claude":
-		return cmdExists("claude") || cmdExists("claude.cmd") || claudeInstalledWindows()
+		return cmdExists("claude") || cmdExists("claude.cmd") || winBinExists("claude")
 	case "codex":
-		return cmdExists("codex") || cmdExists("openai")
+		return cmdExists("codex") || cmdExists("openai") || winBinExists("codex")
 	case "opencode":
-		return cmdExists("opencode")
+		return cmdExists("opencode") || winBinExists("opencode")
 	case "aider":
-		return cmdExists("aider")
+		return cmdExists("aider") || winBinExists("aider")
 	case "continue":
 		home, _ := os.UserHomeDir()
 		return fileExists(filepath.Join(home, ".continue", "config.yaml")) || continueInstalled()
@@ -216,7 +216,9 @@ func fileExists(path string) bool {
 	return err == nil
 }
 
-func claudeInstalledWindows() bool {
+// winBinExists checks common Windows install locations for a binary.
+// Covers npm, pnpm, yarn, volta, scoop, pipx, and standalone installers.
+func winBinExists(name string) bool {
 	if runtime.GOOS != "windows" {
 		return false
 	}
@@ -231,21 +233,48 @@ func claudeInstalledWindows() bool {
 	}
 
 	paths := []string{
-		// Standalone installer
-		filepath.Join(localAppData, "Programs", "claude", "claude.exe"),
-		filepath.Join(localAppData, "AnthropicClaude", "claude.exe"),
-		// npm global install
-		filepath.Join(appData, "npm", "claude.cmd"),
-		filepath.Join(appData, "npm", "claude"),
-		// Scoop / winget / chocolatey
-		filepath.Join(home, "scoop", "shims", "claude.exe"),
-		filepath.Join(home, "scoop", "shims", "claude.cmd"),
+		// npm global
+		filepath.Join(appData, "npm", name+".cmd"),
+		filepath.Join(appData, "npm", name),
+		// pnpm global
+		filepath.Join(localAppData, "pnpm", name+".cmd"),
+		filepath.Join(localAppData, "pnpm", name),
+		// yarn global
+		filepath.Join(localAppData, "yarn", "bin", name+".cmd"),
+		// volta
+		filepath.Join(localAppData, "volta", "bin", name+".exe"),
+		// scoop
+		filepath.Join(home, "scoop", "shims", name+".exe"),
+		filepath.Join(home, "scoop", "shims", name+".cmd"),
+		// pipx / pip (Python tools like aider)
+		filepath.Join(home, ".local", "bin", name+".exe"),
+		// Standalone installer paths
+		filepath.Join(localAppData, "Programs", name, name+".exe"),
 	}
+
+	// Claude-specific standalone paths
+	if name == "claude" {
+		paths = append(paths,
+			filepath.Join(localAppData, "AnthropicClaude", "claude.exe"),
+		)
+	}
+
 	for _, p := range paths {
 		if fileExists(p) {
 			return true
 		}
 	}
+
+	// Also check Python Scripts dirs (for pip-installed tools like aider)
+	scriptsPattern := filepath.Join(localAppData, "Programs", "Python", "Python*", "Scripts", name+".exe")
+	if matches, _ := filepath.Glob(scriptsPattern); len(matches) > 0 {
+		return true
+	}
+	scriptsPattern2 := filepath.Join(appData, "Python", "Python*", "Scripts", name+".exe")
+	if matches, _ := filepath.Glob(scriptsPattern2); len(matches) > 0 {
+		return true
+	}
+
 	return false
 }
 
