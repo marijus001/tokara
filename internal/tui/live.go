@@ -394,11 +394,12 @@ func (m LiveModel) View() string {
 
 	b.WriteString(panelContent)
 
-	// Pad to fill remaining space
+	// Pad to fill remaining space (leave 1 line gap before footer)
 	contentLines := strings.Count(panelContent, "\n")
-	for i := contentLines; i < bottomLines; i++ {
+	for i := contentLines; i < bottomLines-1; i++ {
 		b.WriteString("\n")
 	}
+	b.WriteString("\n") // blank line before footer
 
 	// ── Footer ──
 

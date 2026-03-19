@@ -66,6 +66,9 @@ func configureEnv(tool detect.Tool, gatewayURL string) ConfigResult {
 		}
 	}
 
+	// Ensure profile directory exists (Windows PowerShell profile path may not exist)
+	os.MkdirAll(filepath.Dir(profile), 0755)
+
 	// Append to profile
 	f, err := os.OpenFile(profile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
