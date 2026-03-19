@@ -29,9 +29,20 @@ type Tool struct {
 	Note       string            // For ConfigNote: message to display
 }
 
+// SDKEnvVars returns the env vars that intercept all LLM SDK traffic.
+// Setting these routes requests from any tool using these SDKs through the proxy.
+func SDKEnvVars(gatewayURL string) map[string]string {
+	return map[string]string{
+		"ANTHROPIC_BASE_URL": gatewayURL,           // Anthropic SDK
+		"OPENAI_BASE_URL":    gatewayURL,            // OpenAI SDK
+		"OPENAI_API_BASE":    gatewayURL,            // Aider / older OpenAI SDK
+		"ANTHROPIC_API_BASE": gatewayURL,            // Aider / LiteLLM
+	}
+}
+
 // AllTools returns all known AI tools.
 func AllTools(gatewayURL string) []Tool {
-	home, _ := os.UserHomeDir()
+	sdkVars := SDKEnvVars(gatewayURL)
 
 	return []Tool{
 		{
@@ -39,47 +50,35 @@ func AllTools(gatewayURL string) []Tool {
 			Name:       "Claude Code",
 			Desc:       "Anthropic's official coding CLI",
 			ConfigType: ConfigEnv,
-			EnvVars:    map[string]string{"ANTHROPIC_BASE_URL": gatewayURL},
-			KeyVar:     "ANTHROPIC_API_KEY",
+			EnvVars:    sdkVars,
 		},
 		{
 			ID:         "codex",
 			Name:       "OpenAI Codex",
 			Desc:       "OpenAI's coding agent CLI",
 			ConfigType: ConfigEnv,
-			EnvVars:    map[string]string{"OPENAI_BASE_URL": gatewayURL},
-			KeyVar:     "OPENAI_API_KEY",
+			EnvVars:    sdkVars,
 		},
 		{
 			ID:         "opencode",
 			Name:       "OpenCode",
 			Desc:       "Terminal-based AI coding assistant",
-			ConfigType: ConfigFile,
-			ConfigPath: filepath.Join(home, ".config", "opencode", "opencode.json"),
+			ConfigType: ConfigEnv,
+			EnvVars:    sdkVars,
 		},
 		{
 			ID:         "aider",
 			Name:       "Aider",
 			Desc:       "Terminal AI pair programming",
 			ConfigType: ConfigEnv,
-			EnvVars: map[string]string{
-				"OPENAI_API_BASE":    gatewayURL,
-				"ANTHROPIC_API_BASE": gatewayURL,
-			},
+			EnvVars:    sdkVars,
 		},
 		{
 			ID:         "continue",
 			Name:       "Continue.dev",
 			Desc:       "VS Code AI extension",
-			ConfigType: ConfigFile,
-			ConfigPath: filepath.Join(home, ".continue", "config.yaml"),
-		},
-		{
-			ID:         "openclaw",
-			Name:       "OpenClaw",
-			Desc:       "Autonomous code refactoring agent",
-			ConfigType: ConfigFile,
-			ConfigPath: filepath.Join(home, ".openclaw", "config.yaml"),
+			ConfigType: ConfigEnv,
+			EnvVars:    sdkVars,
 		},
 		{
 			ID:         "cursor",
@@ -113,13 +112,12 @@ func Detect(tool Tool) bool {
 	case "codex":
 		return cmdExists("codex") || cmdExists("openai")
 	case "opencode":
-		return cmdExists("opencode") || fileExists(tool.ConfigPath)
+		return cmdExists("opencode")
 	case "aider":
 		return cmdExists("aider")
 	case "continue":
-		return fileExists(tool.ConfigPath) || continueInstalled()
-	case "openclaw":
-		return fileExists(tool.ConfigPath) || cmdExists("openclaw")
+		home, _ := os.UserHomeDir()
+		return fileExists(filepath.Join(home, ".continue", "config.yaml")) || continueInstalled()
 	case "cursor":
 		return cmdExists("cursor") || cursorInstalled()
 	case "windsurf":
