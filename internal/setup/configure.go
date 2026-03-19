@@ -132,6 +132,8 @@ func configureFile(tool detect.Tool, gatewayURL string) ConfigResult {
 		return patchOpenClaw(configPath, gatewayURL)
 	case "opencode":
 		return patchOpenCode(configPath, gatewayURL)
+	case "continue":
+		return patchContinue(configPath, gatewayURL)
 	default:
 		return ConfigResult{Tool: tool.Name, Success: false, Details: "no patch function for this tool"}
 	}
@@ -265,6 +267,52 @@ func Unconfigure(tool detect.Tool) error {
 	}
 
 	return os.WriteFile(profile, []byte(strings.Join(cleaned, "\n")), 0644)
+}
+
+func patchContinue(configPath, gatewayURL string) ConfigResult {
+	existing, err := os.ReadFile(configPath)
+
+	backup := ""
+	if err == nil && len(existing) > 0 {
+		backup = configPath + ".tokara-backup"
+		os.WriteFile(backup, existing, 0600)
+	}
+
+	os.MkdirAll(filepath.Dir(configPath), 0755)
+
+	// Continue.dev uses YAML config with models[].apiBase
+	// Write a simple config that routes through the proxy
+	content := fmt.Sprintf(`# Tokara proxy configuration
+models:
+  - name: "Claude (via Tokara)"
+    provider: anthropic
+    model: claude-sonnet-4-20250514
+    apiBase: "%s"
+  - name: "GPT-4o (via Tokara)"
+    provider: openai
+    model: gpt-4o
+    apiBase: "%s/v1"
+`, gatewayURL, gatewayURL)
+
+	// If existing config has content, append our models
+	if err == nil && len(existing) > 0 {
+		existingStr := string(existing)
+		if strings.Contains(existingStr, "Tokara proxy") {
+			return ConfigResult{Tool: "Continue.dev", Success: true, Details: "Already configured"}
+		}
+		content = existingStr + "\n" + content
+	}
+
+	if writeErr := os.WriteFile(configPath, []byte(content), 0600); writeErr != nil {
+		return ConfigResult{Tool: "Continue.dev", Success: false, Details: fmt.Sprintf("Write error: %v", writeErr)}
+	}
+
+	return ConfigResult{
+		Tool:    "Continue.dev",
+		Success: true,
+		Details: fmt.Sprintf("Patched %s (models[].apiBase)", configPath),
+		Backup:  backup,
+	}
 }
 
 func unconfigureEnvWindows(tool detect.Tool) error {

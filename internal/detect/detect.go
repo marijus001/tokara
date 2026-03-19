@@ -51,13 +51,6 @@ func AllTools(gatewayURL string) []Tool {
 			KeyVar:     "OPENAI_API_KEY",
 		},
 		{
-			ID:         "openclaw",
-			Name:       "OpenClaw",
-			Desc:       "Autonomous code refactoring agent",
-			ConfigType: ConfigFile,
-			ConfigPath: filepath.Join(home, ".openclaw", "config.yaml"),
-		},
-		{
 			ID:         "opencode",
 			Name:       "OpenCode",
 			Desc:       "Terminal-based AI coding assistant",
@@ -65,11 +58,49 @@ func AllTools(gatewayURL string) []Tool {
 			ConfigPath: filepath.Join(home, ".config", "opencode", "opencode.json"),
 		},
 		{
+			ID:         "aider",
+			Name:       "Aider",
+			Desc:       "Terminal AI pair programming",
+			ConfigType: ConfigEnv,
+			EnvVars: map[string]string{
+				"OPENAI_API_BASE":    gatewayURL,
+				"ANTHROPIC_API_BASE": gatewayURL,
+			},
+		},
+		{
+			ID:         "continue",
+			Name:       "Continue.dev",
+			Desc:       "VS Code AI extension",
+			ConfigType: ConfigFile,
+			ConfigPath: filepath.Join(home, ".continue", "config.yaml"),
+		},
+		{
+			ID:         "openclaw",
+			Name:       "OpenClaw",
+			Desc:       "Autonomous code refactoring agent",
+			ConfigType: ConfigFile,
+			ConfigPath: filepath.Join(home, ".openclaw", "config.yaml"),
+		},
+		{
+			ID:         "cursor",
+			Name:       "Cursor",
+			Desc:       "AI code editor",
+			ConfigType: ConfigNote,
+			Note:       "Set proxy in Cursor > Settings > Models > Override OpenAI Base URL:\n  " + gatewayURL + "/v1",
+		},
+		{
+			ID:         "windsurf",
+			Name:       "Windsurf",
+			Desc:       "Codeium's AI IDE",
+			ConfigType: ConfigNote,
+			Note:       "Set proxy in Windsurf Settings > Custom Model Provider:\n  Base URL: " + gatewayURL + "/v1",
+		},
+		{
 			ID:         "copilot",
 			Name:       "GitHub Copilot",
 			Desc:       "GitHub's AI pair programmer",
 			ConfigType: ConfigNote,
-			Note:       "GitHub Copilot doesn't support custom API endpoints natively.\n  Use Tokara's gateway with Copilot-compatible tools instead.\n  See: https://tokara.dev/docs/integrations",
+			Note:       "Copilot doesn't support custom API endpoints.",
 		},
 	}
 }
@@ -81,14 +112,58 @@ func Detect(tool Tool) bool {
 		return cmdExists("claude") || cmdExists("claude.cmd") || claudeInstalledWindows()
 	case "codex":
 		return cmdExists("codex") || cmdExists("openai")
-	case "openclaw":
-		return fileExists(tool.ConfigPath) || cmdExists("openclaw")
 	case "opencode":
 		return cmdExists("opencode") || fileExists(tool.ConfigPath)
+	case "aider":
+		return cmdExists("aider")
+	case "continue":
+		return fileExists(tool.ConfigPath) || continueInstalled()
+	case "openclaw":
+		return fileExists(tool.ConfigPath) || cmdExists("openclaw")
+	case "cursor":
+		return cmdExists("cursor") || cursorInstalled()
+	case "windsurf":
+		return cmdExists("windsurf") || windsurfInstalled()
 	case "copilot":
 		return copilotInstalled()
 	default:
 		return false
+	}
+}
+
+func continueInstalled() bool {
+	home, _ := os.UserHomeDir()
+	extDir := filepath.Join(home, ".vscode", "extensions")
+	entries, _ := os.ReadDir(extDir)
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), "continue.continue") {
+			return true
+		}
+	}
+	return false
+}
+
+func cursorInstalled() bool {
+	switch runtime.GOOS {
+	case "darwin":
+		return fileExists("/Applications/Cursor.app")
+	case "windows":
+		home, _ := os.UserHomeDir()
+		return fileExists(filepath.Join(home, "AppData", "Local", "Programs", "cursor", "Cursor.exe"))
+	default:
+		return cmdExists("cursor")
+	}
+}
+
+func windsurfInstalled() bool {
+	switch runtime.GOOS {
+	case "darwin":
+		return fileExists("/Applications/Windsurf.app")
+	case "windows":
+		home, _ := os.UserHomeDir()
+		return fileExists(filepath.Join(home, "AppData", "Local", "Programs", "windsurf", "Windsurf.exe"))
+	default:
+		return cmdExists("windsurf")
 	}
 }
 
