@@ -89,6 +89,7 @@ func NewLiveModel(cb Callbacks, version, addr, mode string) LiveModel {
 		addr:     addr,
 		mode:     mode,
 		snapshot: cb.GetSnapshot(),
+		height:   40, // sensible default until WindowSizeMsg arrives
 	}
 }
 
@@ -434,11 +435,12 @@ func (m LiveModel) renderLogs(maxLines int) string {
 
 	accentStyle := lipgloss.NewStyle().Foreground(rose)
 	show := len(m.snapshot.RecentEvents)
-	if show > maxLines-3 {
-		show = maxLines - 3
+	available := maxLines - 3 // header line + "Activity:" + blank
+	if available < 3 {
+		available = 3
 	}
-	if show > 20 {
-		show = 20
+	if show > available {
+		show = available
 	}
 
 	for i := 0; i < show; i++ {
