@@ -2,6 +2,8 @@ package tui
 
 import (
 	"fmt"
+	"os/exec"
+	"runtime"
 	"strings"
 	"time"
 
@@ -10,6 +12,8 @@ import (
 
 	"github.com/marijus001/tokara/internal/stats"
 )
+
+const dashboardURL = "https://tokara.dev/dashboard"
 
 type liveTickMsg time.Time
 type configSavedMsg struct{}
@@ -110,9 +114,9 @@ func (m LiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case tea.KeyEnter:
 				if m.upgradeInput != "" {
 					if err := m.cb.SaveAPIKey(m.upgradeInput); err != nil {
-						m.upgradeMsg = fmt.Sprintf("  ✗ %v", err)
+						m.upgradeMsg = fmt.Sprintf("  \u2717 %v", err)
 					} else {
-						m.upgradeMsg = "  ✓ API key saved — restart proxy to enable paid features"
+						m.upgradeMsg = "  \u2713 API key saved — restart proxy to enable paid features"
 						m.mode = "paid"
 					}
 					m.upgradeInput = ""
@@ -123,6 +127,12 @@ func (m LiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			default:
 				if msg.Type == tea.KeyRunes {
+					// Press u with empty input → open browser
+					if m.upgradeInput == "" && string(msg.Runes) == "u" {
+						openBrowser(dashboardURL)
+						m.upgradeMsg = "  Opening tokara.dev/dashboard..."
+						return m, nil
+					}
 					m.upgradeInput += string(msg.Runes)
 				}
 			}
@@ -405,7 +415,7 @@ func (m LiveModel) View() string {
 
 	switch {
 	case m.activePanel == panelUpgrade:
-		b.WriteString(fmt.Sprintf("  %s\n", helpStyle.Render("[enter] save  [esc] cancel")))
+		b.WriteString(fmt.Sprintf("  %s\n", helpStyle.Render("[enter] save  [u] open dashboard  [esc] cancel")))
 	case m.activePanel == panelConfig && m.configEditing:
 		b.WriteString(fmt.Sprintf("  %s\n", helpStyle.Render("[enter] save  [esc] cancel")))
 	case m.activePanel == panelConfig:
@@ -635,8 +645,17 @@ func (m LiveModel) renderUpgrade() string {
 	b.WriteString("\n")
 	b.WriteString(fmt.Sprintf("  %s\n\n", labelStyle.Render("Upgrade — Add API Key:")))
 
+	linkStyle := lipgloss.NewStyle().Foreground(rose).Bold(true)
 	inputStyle := lipgloss.NewStyle().Foreground(white)
 	cursor := lipgloss.NewStyle().Foreground(rose).Render("█")
+
+	boxStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(rose).
+		Padding(0, 2)
+	b.WriteString(fmt.Sprintf("  %s\n\n",
+		boxStyle.Render(fmt.Sprintf("Get your key at %s  —  press [u] to open", linkStyle.Render("tokara.dev/dashboard"))),
+	))
 
 	b.WriteString(fmt.Sprintf("  %s %s%s\n",
 		labelStyle.Render("API key:"),
@@ -665,4 +684,17 @@ func clearConfigMsgAfter() tea.Cmd {
 	return tea.Tick(2*time.Second, func(t time.Time) tea.Msg {
 		return configSavedMsg{}
 	})
+}
+
+func openBrowser(url string) {
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "darwin":
+		cmd = exec.Command("open", url)
+	case "windows":
+		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", url)
+	default:
+		cmd = exec.Command("xdg-open", url)
+	}
+	cmd.Start()
 }
