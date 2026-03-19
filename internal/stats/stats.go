@@ -131,7 +131,7 @@ func (c *Collector) BuildSnapshot(requests, compactions, tokensSaved int64, sess
 		Compactions:  compactions,
 		TokensSaved:  tokensSaved,
 		Sessions:     sessions,
-		RecentEvents: c.RecentEvents(10),
+		RecentEvents: c.RecentEvents(c.maxEvents),
 	}
 }
 
