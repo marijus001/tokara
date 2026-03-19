@@ -15,6 +15,7 @@ import (
 	"github.com/marijus001/tokara/internal/message"
 	"github.com/marijus001/tokara/internal/provider"
 	"github.com/marijus001/tokara/internal/session"
+	"github.com/marijus001/tokara/internal/stats"
 )
 
 // Options configures the proxy behavior.
@@ -25,6 +26,8 @@ type Options struct {
 	Compactor *compactor.Compactor
 	// ContextSource provides RAG context enrichment. If nil, no enrichment.
 	ContextSource tkctx.Source
+	// StatsCollector records detailed events for the TUI. If nil, no events emitted.
+	StatsCollector *stats.Collector
 }
 
 // Stats tracks cumulative proxy statistics.
@@ -133,12 +136,25 @@ func (p *Proxy) maybeCompact(body []byte, prov provider.Provider) []byte {
 
 		action := "compacted"
 		if result.Action == compactor.ActionAlreadyReady {
-			action = "compacted (precomputed)"
+			action = "precomputed"
 		}
+		savedPct := saved * 100 / max(1, result.OriginalTokens)
+
 		log.Printf("[%s] %s %s %dK → %dK (%d%% saved, %d turns)",
 			prov.Name, parsed.Model, action,
 			result.OriginalTokens/1000, result.CompactedTokens/1000,
-			saved*100/max(1, result.OriginalTokens), result.TurnsCompacted)
+			savedPct, result.TurnsCompacted)
+
+		if p.opts.StatsCollector != nil {
+			p.opts.StatsCollector.AddEvent(stats.Event{
+				Provider: prov.Name,
+				Model:    parsed.Model,
+				Action:   action,
+				InputK:   result.OriginalTokens / 1000,
+				OutputK:  result.CompactedTokens / 1000,
+				SavedPct: int(savedPct),
+			})
+		}
 
 		rewritten, err := message.RewriteMessages(parsed, result.Messages)
 		if err != nil {
@@ -152,6 +168,25 @@ func (p *Proxy) maybeCompact(body []byte, prov provider.Provider) []byte {
 			prov.Name, parsed.Model,
 			result.OriginalTokens/1000,
 			result.OriginalTokens*100/max(1, result.OriginalTokens))
+
+		if p.opts.StatsCollector != nil {
+			p.opts.StatsCollector.AddEvent(stats.Event{
+				Provider: prov.Name,
+				Model:    parsed.Model,
+				Action:   "precomputing",
+				InputK:   result.OriginalTokens / 1000,
+			})
+		}
+
+	case compactor.ActionPassThrough:
+		if p.opts.StatsCollector != nil {
+			p.opts.StatsCollector.AddEvent(stats.Event{
+				Provider: prov.Name,
+				Model:    parsed.Model,
+				Action:   "pass-through",
+				InputK:   result.OriginalTokens / 1000,
+			})
+		}
 	}
 
 	return body

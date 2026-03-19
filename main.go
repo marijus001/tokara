@@ -27,7 +27,7 @@ import (
 	"github.com/marijus001/tokara/internal/tui"
 )
 
-const version = "0.3.2"
+const version = "0.3.3"
 
 func main() {
 	// Prevent charmbracelet/colorprofile from querying terminal (can hang when spawned from npx)
@@ -131,8 +131,9 @@ func runServer(cfg config.Config) {
 	collector := stats.NewCollector(50)
 
 	p := proxy.New(proxy.Options{
-		Compactor:     comp,
-		ContextSource: ctxSource,
+		Compactor:      comp,
+		ContextSource:  ctxSource,
+		StatsCollector: collector,
 	})
 
 	mux := http.NewServeMux()

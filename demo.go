@@ -41,8 +41,9 @@ func runDemo() {
 			"openai":    openaiUp.URL,
 			"google":    googleUp.URL,
 		},
-		Compactor:     comp,
-		ContextSource: &tkctx.NilSource{},
+		Compactor:      comp,
+		ContextSource:  &tkctx.NilSource{},
+		StatsCollector: collector,
 	})
 
 	// Start HTTP server
