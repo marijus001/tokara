@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -26,7 +27,7 @@ import (
 	"github.com/marijus001/tokara/internal/tui"
 )
 
-const version = "0.3.1"
+const version = "0.3.2"
 
 func main() {
 	// Prevent charmbracelet/colorprofile from querying terminal (can hang when spawned from npx)
@@ -170,6 +171,9 @@ func runServer(cfg config.Config) {
 			log.Fatalf("  ✗ server error: %v", err)
 		}
 	}()
+
+	// Silence log output so it doesn't corrupt the TUI
+	log.SetOutput(io.Discard)
 
 	// Callbacks for the TUI
 	cb := tui.Callbacks{

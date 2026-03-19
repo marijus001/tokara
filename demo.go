@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"fmt"
+	"io"
 	"log"
 	"math/rand"
 	"net/http"
@@ -60,6 +61,9 @@ func runDemo() {
 			log.Fatalf("server error: %v", err)
 		}
 	}()
+
+	// Silence log output so it doesn't corrupt the TUI
+	log.SetOutput(io.Discard)
 
 	// Start fake traffic generator
 	go generateTraffic(addr)
