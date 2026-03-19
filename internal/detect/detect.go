@@ -149,11 +149,25 @@ func claudeInstalledWindows() bool {
 		return false
 	}
 	home, _ := os.UserHomeDir()
-	// Check common Windows install locations
+	localAppData := os.Getenv("LOCALAPPDATA")
+	appData := os.Getenv("APPDATA")
+	if localAppData == "" {
+		localAppData = filepath.Join(home, "AppData", "Local")
+	}
+	if appData == "" {
+		appData = filepath.Join(home, "AppData", "Roaming")
+	}
+
 	paths := []string{
-		filepath.Join(home, "AppData", "Local", "Programs", "claude", "claude.exe"),
-		filepath.Join(home, "AppData", "Roaming", "npm", "claude.cmd"),
-		filepath.Join(home, "AppData", "Roaming", "npm", "claude"),
+		// Standalone installer
+		filepath.Join(localAppData, "Programs", "claude", "claude.exe"),
+		filepath.Join(localAppData, "AnthropicClaude", "claude.exe"),
+		// npm global install
+		filepath.Join(appData, "npm", "claude.cmd"),
+		filepath.Join(appData, "npm", "claude"),
+		// Scoop / winget / chocolatey
+		filepath.Join(home, "scoop", "shims", "claude.exe"),
+		filepath.Join(home, "scoop", "shims", "claude.cmd"),
 	}
 	for _, p := range paths {
 		if fileExists(p) {

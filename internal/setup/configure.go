@@ -4,7 +4,9 @@ package setup
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/marijus001/tokara/internal/detect"
@@ -33,20 +35,14 @@ func ConfigureTool(tool detect.Tool, gatewayURL string) ConfigResult {
 }
 
 func configureEnv(tool detect.Tool, gatewayURL string) ConfigResult {
-	profile := detect.ShellProfile()
-
-	// Read existing profile
-	existing, _ := os.ReadFile(profile)
-	content := string(existing)
-
-	// Build the lines to add
-	var lines []string
-	lines = append(lines, fmt.Sprintf("\n# Tokara proxy — %s", tool.Name))
-	for varName := range tool.EnvVars {
-		lines = append(lines, fmt.Sprintf("export %s=\"%s\"", varName, gatewayURL))
+	// Windows: use setx for persistent env vars
+	if runtime.GOOS == "windows" {
+		return configureEnvWindows(tool, gatewayURL)
 	}
 
-	addition := strings.Join(lines, "\n") + "\n"
+	profile := detect.ShellProfile()
+	existing, _ := os.ReadFile(profile)
+	content := string(existing)
 
 	// Check if already configured
 	if strings.Contains(content, "# Tokara proxy") && strings.Contains(content, tool.Name) {
@@ -57,6 +53,14 @@ func configureEnv(tool detect.Tool, gatewayURL string) ConfigResult {
 		}
 	}
 
+	// Build lines to add
+	var lines []string
+	lines = append(lines, fmt.Sprintf("\n# Tokara proxy — %s", tool.Name))
+	for varName := range tool.EnvVars {
+		lines = append(lines, fmt.Sprintf("export %s=\"%s\"", varName, gatewayURL))
+	}
+	addition := strings.Join(lines, "\n") + "\n"
+
 	// Backup existing profile
 	backup := ""
 	if len(existing) > 0 {
@@ -65,9 +69,6 @@ func configureEnv(tool detect.Tool, gatewayURL string) ConfigResult {
 			return ConfigResult{Tool: tool.Name, Success: false, Details: fmt.Sprintf("Cannot backup %s: %v", profile, err)}
 		}
 	}
-
-	// Ensure profile directory exists (Windows PowerShell profile path may not exist)
-	os.MkdirAll(filepath.Dir(profile), 0755)
 
 	// Append to profile
 	f, err := os.OpenFile(profile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
@@ -85,6 +86,40 @@ func configureEnv(tool detect.Tool, gatewayURL string) ConfigResult {
 		Success: true,
 		Details: fmt.Sprintf("Added to %s", profile),
 		Backup:  backup,
+	}
+}
+
+func configureEnvWindows(tool detect.Tool, gatewayURL string) ConfigResult {
+	for varName, val := range tool.EnvVars {
+		// Check if already set
+		if existing := os.Getenv(varName); existing == val {
+			return ConfigResult{Tool: tool.Name, Success: true, Details: fmt.Sprintf("%s already set", varName)}
+		}
+		// Save old value for backup/restore
+		oldVal := os.Getenv(varName)
+		if oldVal != "" {
+			// Store backup as a tokara config entry
+			home, _ := os.UserHomeDir()
+			backupPath := filepath.Join(home, ".tokara", fmt.Sprintf("backup_%s_%s.txt", tool.ID, varName))
+			os.MkdirAll(filepath.Dir(backupPath), 0755)
+			os.WriteFile(backupPath, []byte(oldVal), 0600)
+		}
+		// Set via setx (persistent user env var)
+		cmd := exec.Command("setx", varName, val)
+		if err := cmd.Run(); err != nil {
+			return ConfigResult{Tool: tool.Name, Success: false, Details: fmt.Sprintf("setx %s failed: %v", varName, err)}
+		}
+		// Also set in current process
+		os.Setenv(varName, val)
+	}
+	var vars []string
+	for varName := range tool.EnvVars {
+		vars = append(vars, varName)
+	}
+	return ConfigResult{
+		Tool:    tool.Name,
+		Success: true,
+		Details: fmt.Sprintf("Set %s via setx (open new terminal to apply)", strings.Join(vars, ", ")),
 	}
 }
 
@@ -174,10 +209,37 @@ func Unconfigure(tool detect.Tool) error {
 	return os.WriteFile(profile, []byte(strings.Join(cleaned, "\n")), 0644)
 }
 
+func unconfigureEnvWindows(tool detect.Tool) error {
+	for varName := range tool.EnvVars {
+		home, _ := os.UserHomeDir()
+		backupPath := filepath.Join(home, ".tokara", fmt.Sprintf("backup_%s_%s.txt", tool.ID, varName))
+		oldVal, err := os.ReadFile(backupPath)
+		if err == nil && len(oldVal) > 0 {
+			// Restore old value
+			exec.Command("setx", varName, string(oldVal)).Run()
+			os.Remove(backupPath)
+		} else {
+			// No old value — delete the env var by setting to empty
+			exec.Command("setx", varName, "").Run()
+		}
+		os.Unsetenv(varName)
+	}
+	return nil
+}
+
 // IsToolConfigured checks if a tool is currently configured to use the tokara gateway.
 func IsToolConfigured(tool detect.Tool, gatewayURL string) bool {
 	switch tool.ConfigType {
 	case detect.ConfigEnv:
+		// On Windows, check the actual env var (set via setx)
+		if runtime.GOOS == "windows" {
+			for varName := range tool.EnvVars {
+				if os.Getenv(varName) == gatewayURL {
+					return true
+				}
+			}
+			return false
+		}
 		profile := detect.ShellProfile()
 		data, err := os.ReadFile(profile)
 		if err != nil {
@@ -204,6 +266,9 @@ func IsToolConfigured(tool detect.Tool, gatewayURL string) bool {
 func UnconfigureTool(tool detect.Tool) error {
 	switch tool.ConfigType {
 	case detect.ConfigEnv:
+		if runtime.GOOS == "windows" {
+			return unconfigureEnvWindows(tool)
+		}
 		return Unconfigure(tool)
 
 	case detect.ConfigFile:
