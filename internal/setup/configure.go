@@ -5,9 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 
 	"github.com/marijus001/tokara/internal/detect"
@@ -36,91 +34,66 @@ func ConfigureTool(tool detect.Tool, gatewayURL string) ConfigResult {
 }
 
 func configureEnv(tool detect.Tool, gatewayURL string) ConfigResult {
-	// Windows: use setx for persistent env vars
-	if runtime.GOOS == "windows" {
-		return configureEnvWindows(tool, gatewayURL)
-	}
+	// Patch .vscode/settings.json in the current directory
+	// This sets terminal.integrated.env.* so any terminal opened in the IDE
+	// (including Claude Code, Codex, etc.) routes through the proxy.
+	settingsPath := filepath.Join(".vscode", "settings.json")
 
-	profile := detect.ShellProfile()
-	existing, _ := os.ReadFile(profile)
-	content := string(existing)
+	// Read existing settings or start fresh
+	var settings map[string]interface{}
+	existing, err := os.ReadFile(settingsPath)
+	if err == nil {
+		if jsonErr := json.Unmarshal(existing, &settings); jsonErr != nil {
+			settings = make(map[string]interface{})
+		}
+	} else {
+		settings = make(map[string]interface{})
+	}
 
 	// Check if already configured
-	if strings.Contains(content, "# Tokara proxy") && strings.Contains(content, tool.Name) {
-		return ConfigResult{
-			Tool:    tool.Name,
-			Success: true,
-			Details: fmt.Sprintf("Already configured in %s", profile),
+	for _, platform := range []string{"osx", "linux", "windows"} {
+		key := "terminal.integrated.env." + platform
+		if env, ok := settings[key].(map[string]interface{}); ok {
+			for varName := range tool.EnvVars {
+				if v, exists := env[varName]; exists && v == gatewayURL {
+					return ConfigResult{Tool: tool.Name, Success: true, Details: "Already configured in .vscode/settings.json"}
+				}
+			}
 		}
 	}
 
-	// Build lines to add
-	var lines []string
-	lines = append(lines, fmt.Sprintf("\n# Tokara proxy — %s", tool.Name))
-	for varName := range tool.EnvVars {
-		lines = append(lines, fmt.Sprintf("export %s=\"%s\"", varName, gatewayURL))
-	}
-	addition := strings.Join(lines, "\n") + "\n"
-
-	// Backup existing profile
+	// Backup existing settings
 	backup := ""
-	if len(existing) > 0 {
-		backup = profile + ".tokara-backup"
-		if err := os.WriteFile(backup, existing, 0600); err != nil {
-			return ConfigResult{Tool: tool.Name, Success: false, Details: fmt.Sprintf("Cannot backup %s: %v", profile, err)}
+	if err == nil && len(existing) > 0 {
+		backup = settingsPath + ".tokara-backup"
+		os.WriteFile(backup, existing, 0644)
+	}
+
+	// Set env vars for all platforms
+	for _, platform := range []string{"osx", "linux", "windows"} {
+		key := "terminal.integrated.env." + platform
+		env, ok := settings[key].(map[string]interface{})
+		if !ok {
+			env = make(map[string]interface{})
 		}
+		for varName, val := range tool.EnvVars {
+			env[varName] = val
+		}
+		settings[key] = env
 	}
 
-	// Append to profile
-	f, err := os.OpenFile(profile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-	if err != nil {
-		return ConfigResult{Tool: tool.Name, Success: false, Details: fmt.Sprintf("Cannot write to %s: %v", profile, err)}
-	}
-	defer f.Close()
-
-	if _, err := f.WriteString(addition); err != nil {
-		return ConfigResult{Tool: tool.Name, Success: false, Details: fmt.Sprintf("Write error: %v", err)}
+	// Write back
+	os.MkdirAll(".vscode", 0755)
+	data, _ := json.MarshalIndent(settings, "", "  ")
+	if writeErr := os.WriteFile(settingsPath, append(data, '\n'), 0644); writeErr != nil {
+		return ConfigResult{Tool: tool.Name, Success: false, Details: fmt.Sprintf("Cannot write %s: %v", settingsPath, writeErr)}
 	}
 
 	return ConfigResult{
 		Tool:    tool.Name,
 		Success: true,
-		Details: fmt.Sprintf("Added to %s", profile),
+		Details: "Patched .vscode/settings.json (restart IDE terminal to apply)",
 		Backup:  backup,
-	}
-}
-
-func configureEnvWindows(tool detect.Tool, gatewayURL string) ConfigResult {
-	for varName, val := range tool.EnvVars {
-		// Check if already set
-		if existing := os.Getenv(varName); existing == val {
-			return ConfigResult{Tool: tool.Name, Success: true, Details: fmt.Sprintf("%s already set", varName)}
-		}
-		// Save old value for backup/restore
-		oldVal := os.Getenv(varName)
-		if oldVal != "" {
-			// Store backup as a tokara config entry
-			home, _ := os.UserHomeDir()
-			backupPath := filepath.Join(home, ".tokara", fmt.Sprintf("backup_%s_%s.txt", tool.ID, varName))
-			os.MkdirAll(filepath.Dir(backupPath), 0755)
-			os.WriteFile(backupPath, []byte(oldVal), 0600)
-		}
-		// Set via setx (persistent user env var)
-		cmd := exec.Command("setx", varName, val)
-		if err := cmd.Run(); err != nil {
-			return ConfigResult{Tool: tool.Name, Success: false, Details: fmt.Sprintf("setx %s failed: %v", varName, err)}
-		}
-		// Also set in current process
-		os.Setenv(varName, val)
-	}
-	var vars []string
-	for varName := range tool.EnvVars {
-		vars = append(vars, varName)
-	}
-	return ConfigResult{
-		Tool:    tool.Name,
-		Success: true,
-		Details: fmt.Sprintf("Set %s via setx (open new terminal to apply)", strings.Join(vars, ", ")),
 	}
 }
 
@@ -245,28 +218,43 @@ func Unconfigure(tool detect.Tool) error {
 		return nil
 	}
 
-	profile := detect.ShellProfile()
-	data, err := os.ReadFile(profile)
+	settingsPath := filepath.Join(".vscode", "settings.json")
+	data, err := os.ReadFile(settingsPath)
 	if err != nil {
-		return err
+		return nil // no settings file, nothing to unconfigure
 	}
 
-	lines := strings.Split(string(data), "\n")
-	var cleaned []string
-	skip := false
-	for _, line := range lines {
-		if strings.Contains(line, "# Tokara proxy") {
-			skip = true
-			continue
-		}
-		if skip && strings.HasPrefix(strings.TrimSpace(line), "export ") {
-			continue
-		}
-		skip = false
-		cleaned = append(cleaned, line)
+	var settings map[string]interface{}
+	if jsonErr := json.Unmarshal(data, &settings); jsonErr != nil {
+		return nil
 	}
 
-	return os.WriteFile(profile, []byte(strings.Join(cleaned, "\n")), 0644)
+	// Remove our env vars from all platforms
+	changed := false
+	for _, platform := range []string{"osx", "linux", "windows"} {
+		key := "terminal.integrated.env." + platform
+		if env, ok := settings[key].(map[string]interface{}); ok {
+			for varName := range tool.EnvVars {
+				if _, exists := env[varName]; exists {
+					delete(env, varName)
+					changed = true
+				}
+			}
+			// Remove the key entirely if empty
+			if len(env) == 0 {
+				delete(settings, key)
+			} else {
+				settings[key] = env
+			}
+		}
+	}
+
+	if !changed {
+		return nil
+	}
+
+	out, _ := json.MarshalIndent(settings, "", "  ")
+	return os.WriteFile(settingsPath, append(out, '\n'), 0644)
 }
 
 func patchContinue(configPath, gatewayURL string) ConfigResult {
@@ -315,46 +303,32 @@ models:
 	}
 }
 
-func unconfigureEnvWindows(tool detect.Tool) error {
-	for varName := range tool.EnvVars {
-		home, _ := os.UserHomeDir()
-		backupPath := filepath.Join(home, ".tokara", fmt.Sprintf("backup_%s_%s.txt", tool.ID, varName))
-		oldVal, err := os.ReadFile(backupPath)
-		if err == nil && len(oldVal) > 0 {
-			// Restore old value
-			exec.Command("setx", varName, string(oldVal)).Run()
-			os.Remove(backupPath)
-		} else {
-			// No old value — delete the env var by setting to empty
-			exec.Command("setx", varName, "").Run()
-		}
-		os.Unsetenv(varName)
-	}
-	return nil
-}
-
 // IsToolConfigured checks if a tool is currently configured to use the tokara gateway.
 func IsToolConfigured(tool detect.Tool, gatewayURL string) bool {
 	switch tool.ConfigType {
 	case detect.ConfigEnv:
-		// On Windows, check the actual env var (set via setx)
-		if runtime.GOOS == "windows" {
-			for varName := range tool.EnvVars {
-				if os.Getenv(varName) == gatewayURL {
-					return true
-				}
-			}
-			return false
-		}
-		profile := detect.ShellProfile()
-		data, err := os.ReadFile(profile)
+		// Check .vscode/settings.json for terminal env vars
+		settingsPath := filepath.Join(".vscode", "settings.json")
+		data, err := os.ReadFile(settingsPath)
 		if err != nil {
 			return false
 		}
-		content := string(data)
-		return strings.Contains(content, "# Tokara proxy") &&
-			strings.Contains(content, tool.Name) &&
-			strings.Contains(content, gatewayURL)
+		var settings map[string]interface{}
+		if json.Unmarshal(data, &settings) != nil {
+			return false
+		}
+		// Check any platform's env block
+		for _, platform := range []string{"osx", "linux", "windows"} {
+			key := "terminal.integrated.env." + platform
+			if env, ok := settings[key].(map[string]interface{}); ok {
+				for varName := range tool.EnvVars {
+					if v, exists := env[varName]; exists && v == gatewayURL {
+						return true
+					}
+				}
+			}
+		}
+		return false
 
 	case detect.ConfigFile:
 		data, err := os.ReadFile(tool.ConfigPath)
@@ -372,9 +346,6 @@ func IsToolConfigured(tool detect.Tool, gatewayURL string) bool {
 func UnconfigureTool(tool detect.Tool) error {
 	switch tool.ConfigType {
 	case detect.ConfigEnv:
-		if runtime.GOOS == "windows" {
-			return unconfigureEnvWindows(tool)
-		}
 		return Unconfigure(tool)
 
 	case detect.ConfigFile:
