@@ -2,10 +2,12 @@ package proxy
 
 import (
 	"bytes"
+	"encoding/json"
 	"io"
 	"log"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"sync/atomic"
 	"time"
@@ -40,9 +42,10 @@ type Stats struct {
 
 // Proxy is the core reverse proxy handler.
 type Proxy struct {
-	opts   Options
-	client *http.Client
-	Stats  Stats
+	opts          Options
+	client        *http.Client
+	Stats         Stats
+	lastRAGError  atomic.Int64 // unix timestamp of last emitted rag-error event
 }
 
 // New creates a Proxy with the given options.
@@ -96,6 +99,76 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	p.forward(w, r, upstream, prov, finalBody)
 }
 
+// extractUsageFromResponse parses API response data to get real token counts.
+// Works with both streaming (SSE) and non-streaming responses from all providers.
+func (p *Proxy) extractUsageFromResponse(respData []byte, provName string) (inputTokens, outputTokens int) {
+	text := string(respData)
+
+	switch provName {
+	case "anthropic":
+		// Streaming: look for message_start event with usage
+		// Non-streaming: top-level usage object
+		re := regexp.MustCompile(`"input_tokens"\s*:\s*(\d+)`)
+		if m := re.FindStringSubmatch(text); len(m) > 1 {
+			inputTokens, _ = strconv.Atoi(m[1])
+		}
+		re2 := regexp.MustCompile(`"output_tokens"\s*:\s*(\d+)`)
+		// Find the LAST occurrence (streaming sends multiple, last is cumulative)
+		matches := re2.FindAllStringSubmatch(text, -1)
+		if len(matches) > 0 {
+			outputTokens, _ = strconv.Atoi(matches[len(matches)-1][1])
+		}
+
+	case "openai":
+		// Non-streaming: usage.prompt_tokens
+		// Streaming: final chunk with usage (if stream_options.include_usage was set)
+		re := regexp.MustCompile(`"prompt_tokens"\s*:\s*(\d+)`)
+		if m := re.FindStringSubmatch(text); len(m) > 1 {
+			inputTokens, _ = strconv.Atoi(m[1])
+		}
+		re2 := regexp.MustCompile(`"completion_tokens"\s*:\s*(\d+)`)
+		if m := re2.FindStringSubmatch(text); len(m) > 1 {
+			outputTokens, _ = strconv.Atoi(m[1])
+		}
+
+	case "google":
+		// usageMetadata.promptTokenCount
+		re := regexp.MustCompile(`"promptTokenCount"\s*:\s*(\d+)`)
+		if m := re.FindStringSubmatch(text); len(m) > 1 {
+			inputTokens, _ = strconv.Atoi(m[1])
+		}
+		re2 := regexp.MustCompile(`"candidatesTokenCount"\s*:\s*(\d+)`)
+		if m := re2.FindStringSubmatch(text); len(m) > 1 {
+			outputTokens, _ = strconv.Atoi(m[1])
+		}
+	}
+
+	return
+}
+
+// injectOpenAIStreamUsage adds stream_options.include_usage to OpenAI streaming requests
+// so we can get token counts from the response.
+func injectOpenAIStreamUsage(body []byte) []byte {
+	var req map[string]interface{}
+	if json.Unmarshal(body, &req) != nil {
+		return body
+	}
+	// Only inject for streaming requests
+	if stream, ok := req["stream"].(bool); !ok || !stream {
+		return body
+	}
+	// Don't overwrite if already set
+	if _, exists := req["stream_options"]; exists {
+		return body
+	}
+	req["stream_options"] = map[string]interface{}{"include_usage": true}
+	out, err := json.Marshal(req)
+	if err != nil {
+		return body
+	}
+	return out
+}
+
 func (p *Proxy) maybeCompact(body []byte, prov provider.Provider) []byte {
 	parsed, err := message.ParseRequestBody(bytes.NewReader(body), prov.Name)
 	if err != nil || len(parsed.Messages) == 0 {
@@ -112,7 +185,12 @@ func (p *Proxy) maybeCompact(body []byte, prov provider.Provider) []byte {
 			})
 			if err != nil {
 				log.Printf("[rag] query failed: %v", err)
-				if p.opts.StatsCollector != nil {
+				// Throttle rag-error events: emit at most once per 60 seconds
+				// to avoid spamming the TUI activity log on persistent failures.
+				now := time.Now().Unix()
+				last := p.lastRAGError.Load()
+				if p.opts.StatsCollector != nil && (last == 0 || now-last >= 60) {
+					p.lastRAGError.Store(now)
 					p.opts.StatsCollector.AddEvent(stats.Event{
 						Timestamp: time.Now().Format("15:04"),
 						Provider:  prov.Name,
@@ -218,11 +296,17 @@ func (p *Proxy) forward(w http.ResponseWriter, r *http.Request, upstream string,
 		return
 	}
 
+	// For OpenAI streaming, inject stream_options to get token counts
+	finalBody := body
+	if prov.Name == "openai" {
+		finalBody = injectOpenAIStreamUsage(body)
+	}
+
 	outURL := *r.URL
 	outURL.Scheme = upstreamURL.Scheme
 	outURL.Host = upstreamURL.Host
 
-	outReq, err := http.NewRequestWithContext(r.Context(), r.Method, outURL.String(), bytes.NewReader(body))
+	outReq, err := http.NewRequestWithContext(r.Context(), r.Method, outURL.String(), bytes.NewReader(finalBody))
 	if err != nil {
 		http.Error(w, `{"error":"failed to create upstream request"}`, http.StatusBadGateway)
 		return
@@ -243,8 +327,8 @@ func (p *Proxy) forward(w http.ResponseWriter, r *http.Request, upstream string,
 		}
 	}
 	outReq.Host = upstreamURL.Host
-	outReq.ContentLength = int64(len(body))
-	outReq.Header.Set("Content-Length", strconv.Itoa(len(body)))
+	outReq.ContentLength = int64(len(finalBody))
+	outReq.Header.Set("Content-Length", strconv.Itoa(len(finalBody)))
 
 	start := time.Now()
 	resp, err := p.client.Do(outReq)
@@ -265,7 +349,8 @@ func (p *Proxy) forward(w http.ResponseWriter, r *http.Request, upstream string,
 	}
 	w.WriteHeader(resp.StatusCode)
 
-	// Stream response body back (supports SSE)
+	// Stream response body back (supports SSE), capturing bytes for usage extraction
+	var respBuf bytes.Buffer
 	if f, ok := w.(http.Flusher); ok {
 		buf := make([]byte, 4096)
 		for {
@@ -273,12 +358,36 @@ func (p *Proxy) forward(w http.ResponseWriter, r *http.Request, upstream string,
 			if n > 0 {
 				w.Write(buf[:n])
 				f.Flush()
+				respBuf.Write(buf[:n])
 			}
 			if err != nil {
 				break
 			}
 		}
 	} else {
-		io.Copy(w, resp.Body)
+		body, _ := io.ReadAll(resp.Body)
+		w.Write(body)
+		respBuf.Write(body)
+	}
+
+	// Extract real token counts from the response and update stats
+	if p.opts.StatsCollector != nil && resp.StatusCode == http.StatusOK && respBuf.Len() > 0 {
+		inputTokens, _ := p.extractUsageFromResponse(respBuf.Bytes(), prov.Name)
+		if inputTokens > 0 {
+			ctxWindow := model.ContextWindow(prov.Name) // will be overridden below if we can detect model
+			// Try to get model from the response for accurate window
+			modelRe := regexp.MustCompile(`"model"\s*:\s*"([^"]+)"`)
+			if m := modelRe.FindStringSubmatch(respBuf.String()); len(m) > 1 {
+				ctxWindow = model.ContextWindow(m[1])
+				p.opts.StatsCollector.AddEvent(stats.Event{
+					Timestamp:     time.Now().Format("15:04"),
+					Provider:      prov.Name,
+					Model:         m[1],
+					Action:        "usage",
+					ContextTokens: inputTokens,
+					ContextWindow: ctxWindow,
+				})
+			}
+		}
 	}
 }

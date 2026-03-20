@@ -19,6 +19,10 @@ type Config struct {
 	PrecomputeThreshold  float64
 	PreserveRecentTurns  int
 	LogFile              string
+	EmbeddingProvider    string // "openai" or "voyage"
+	SupabaseURL          string
+	SupabaseKey          string
+	ActiveProject        string
 }
 
 func Defaults() Config {
@@ -93,6 +97,14 @@ func LoadFile(path string) (Config, error) {
 			cfg.AuthToken = val
 		case "log_file":
 			cfg.LogFile = val
+		case "embedding_provider":
+			cfg.EmbeddingProvider = val
+		case "supabase_url":
+			cfg.SupabaseURL = val
+		case "supabase_key":
+			cfg.SupabaseKey = val
+		case "active_project":
+			cfg.ActiveProject = val
 		}
 	}
 	return cfg, scanner.Err()
@@ -116,10 +128,27 @@ func (c *Config) ApplyEnv() {
 	if v := os.Getenv("TOKARA_AUTH_TOKEN"); v != "" {
 		c.AuthToken = v
 	}
+	if v := os.Getenv("TOKARA_EMBEDDING_PROVIDER"); v != "" {
+		c.EmbeddingProvider = v
+	}
+	if v := os.Getenv("TOKARA_SUPABASE_URL"); v != "" {
+		c.SupabaseURL = v
+	}
+	if v := os.Getenv("TOKARA_SUPABASE_KEY"); v != "" {
+		c.SupabaseKey = v
+	}
 }
 
 func (c *Config) HasAPIKey() bool {
 	return strings.HasPrefix(c.APIKey, "tk_live_") || strings.HasPrefix(c.APIKey, "tk_test_")
+}
+
+func (c *Config) HasSupabase() bool {
+	return c.SupabaseURL != "" && c.SupabaseKey != ""
+}
+
+func (c *Config) HasEmbeddingProvider() bool {
+	return c.EmbeddingProvider != ""
 }
 
 func (c Config) SaveFile(path string) error {
@@ -139,6 +168,18 @@ func (c Config) SaveFile(path string) error {
 	}
 	if c.AuthToken != "" {
 		lines = append(lines, fmt.Sprintf("auth_token = \"%s\"", c.AuthToken))
+	}
+	if c.EmbeddingProvider != "" {
+		lines = append(lines, fmt.Sprintf("embedding_provider = \"%s\"", c.EmbeddingProvider))
+	}
+	if c.SupabaseURL != "" {
+		lines = append(lines, fmt.Sprintf("supabase_url = \"%s\"", c.SupabaseURL))
+	}
+	if c.SupabaseKey != "" {
+		lines = append(lines, fmt.Sprintf("supabase_key = \"%s\"", c.SupabaseKey))
+	}
+	if c.ActiveProject != "" {
+		lines = append(lines, fmt.Sprintf("active_project = \"%s\"", c.ActiveProject))
 	}
 	lines = append(lines, fmt.Sprintf("compaction_threshold = %.2f", c.CompactionThreshold))
 	lines = append(lines, fmt.Sprintf("precompute_threshold = %.2f", c.PrecomputeThreshold))

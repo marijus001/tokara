@@ -3,6 +3,8 @@ package context
 import (
 	"fmt"
 	"log"
+	"sync"
+	"time"
 
 	"github.com/marijus001/tokara/internal/api"
 )
@@ -10,11 +12,20 @@ import (
 // CloudSource queries the Tokara hosted API for context.
 type CloudSource struct {
 	client *api.Client
+
+	// Cached availability to avoid hitting health endpoint on every request.
+	mu            sync.Mutex
+	cachedAvail   bool
+	cachedAt      time.Time
+	availCacheTTL time.Duration
 }
 
 // NewCloudSource creates a cloud-backed context source.
 func NewCloudSource(client *api.Client) *CloudSource {
-	return &CloudSource{client: client}
+	return &CloudSource{
+		client:        client,
+		availCacheTTL: 30 * time.Second,
+	}
 }
 
 // Query retrieves relevant code chunks from the Tokara API.
@@ -46,13 +57,24 @@ func (c *CloudSource) Query(query string, opts QueryOpts) ([]Chunk, error) {
 	}}, nil
 }
 
-// Available checks if the API is reachable.
+// Available checks if the API is reachable, with a cached result to avoid
+// hitting the health endpoint on every proxy request.
 func (c *CloudSource) Available() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if !c.cachedAt.IsZero() && time.Since(c.cachedAt) < c.availCacheTTL {
+		return c.cachedAvail
+	}
+
 	resp, err := c.client.Health()
+	c.cachedAt = time.Now()
 	if err != nil {
+		c.cachedAvail = false
 		return false
 	}
-	return resp.Status == "ok"
+	c.cachedAvail = resp.Status == "ok"
+	return c.cachedAvail
 }
 
 // Name returns "cloud".
