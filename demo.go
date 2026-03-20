@@ -91,7 +91,8 @@ func runDemo() {
 		SaveConfig: func(field, value string) error {
 			return fmt.Errorf("demo mode — no config changes")
 		},
-		GetTools: func() []tui.ToolItem { return nil },
+		GetTools:   func() []tui.ToolItem { return nil },
+		LaunchTool: func(id string) error { return fmt.Errorf("demo mode") },
 		SaveAPIKey: func(key string) error {
 			return fmt.Errorf("demo mode — no config changes")
 		},

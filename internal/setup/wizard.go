@@ -2,7 +2,6 @@ package setup
 
 import (
 	"fmt"
-	"strings"
 
 	"github.com/charmbracelet/lipgloss"
 
@@ -38,7 +37,7 @@ func RunWizard(version string) bool {
 	if mode == 1 {
 		prompt.Blank()
 		apiKey = prompt.Ask("Enter your API key:", "")
-		if apiKey == "" || (!strings.HasPrefix(apiKey, "tk_live_") && !strings.HasPrefix(apiKey, "tk_test_")) {
+		if apiKey == "" || (len(apiKey) < 8) {
 			prompt.Fail("Invalid API key. Must start with tk_live_ or tk_test_")
 			prompt.Info("You can add it later with `tokara upgrade`")
 			apiKey = ""
@@ -56,20 +55,10 @@ func RunWizard(version string) bool {
 	prompt.OK("Config saved to ~/.tokara/config.toml")
 	prompt.Blank()
 
-	// Step 3: Detect and configure tools
+	// Step 3: Detect installed tools
 	gatewayURL := fmt.Sprintf("http://localhost:%d", defaultPort)
 	allTools := detect.AllTools(gatewayURL)
-
-	// Let user choose which tools to scan
-	toolNames := make([]string, len(allTools))
-	for i, t := range allTools {
-		toolNames[i] = fmt.Sprintf("%s  %s", t.Name, dim.Render(t.Desc))
-	}
-
-	selected := prompt.SelectMultiple("Which AI tools would you like to detect?", toolNames)
-	prompt.Blank()
-
-	detected := detect.DetectSelected(allTools, selected)
+	detected := detect.DetectAll(allTools)
 
 	if len(detected) > 0 {
 		fmt.Printf("  Found %s AI tool%s:\n", bold.Render(fmt.Sprintf("%d", len(detected))), pluralS(len(detected)))
@@ -83,53 +72,34 @@ func RunWizard(version string) bool {
 		}
 		prompt.Blank()
 
-		var configured []string
+		// Show launch instructions for CLI tools
+		hasLaunchable := false
 		for _, tool := range detected {
-			if tool.ConfigType == detect.ConfigNote {
-				prompt.Info(fmt.Sprintf("%s: %s", tool.Name, tool.Note))
-				prompt.Blank()
-				continue
-			}
-
-			if !prompt.Confirm(fmt.Sprintf("Configure %s to use Tokara?", bold.Render(tool.Name)), true) {
-				prompt.Info(fmt.Sprintf("Skipped %s", tool.Name))
-				prompt.Blank()
-				continue
-			}
-
-			// Show what will change
-			diff := DiffPreview(tool, gatewayURL)
-			if diff != "" {
-				fmt.Println(dim.Render(diff))
-			}
-
-			if !prompt.Confirm("Apply these changes?", true) {
-				prompt.Info("Skipped")
-				prompt.Blank()
-				continue
-			}
-
-			result := ConfigureTool(tool, gatewayURL)
-			if result.Success {
-				prompt.OK(result.Details)
-				if result.Backup != "" {
-					prompt.Info(fmt.Sprintf("Backup saved to %s", result.Backup))
+			if detect.CanLaunch(tool) {
+				if !hasLaunchable {
+					fmt.Printf("  %s\n", bold.Render("Launch through Tokara:"))
+					prompt.Blank()
+					hasLaunchable = true
 				}
-				configured = append(configured, tool.Name)
-			} else {
-				prompt.Fail(result.Details)
+				fmt.Printf("    tokara run %s\n", tool.ID)
 			}
+		}
+		if hasLaunchable {
 			prompt.Blank()
 		}
 
-		if len(configured) > 0 {
-			prompt.OK(fmt.Sprintf("Configured %d tool%s: %s", len(configured), pluralS(len(configured)), strings.Join(configured, ", ")))
+		// Show manual instructions for GUI tools
+		for _, tool := range detected {
+			if tool.Note != "" {
+				prompt.Info(fmt.Sprintf("%s: %s", tool.Name, tool.Note))
+				prompt.Blank()
+			}
 		}
 	} else {
 		prompt.Info("No AI tools detected.")
 		prompt.Blank()
-		prompt.Info("Supported tools: Claude Code, OpenAI Codex, OpenClaw, OpenCode")
-		prompt.Info(fmt.Sprintf("Point any tool at %s manually.", bold.Render(gatewayURL)))
+		prompt.Info("Supported tools: Claude Code, OpenAI Codex, Aider")
+		prompt.Info(fmt.Sprintf("Launch any tool through Tokara: tokara run claude"))
 	}
 	prompt.Blank()
 
@@ -142,8 +112,8 @@ func RunWizard(version string) bool {
 	}
 	prompt.Info(fmt.Sprintf("Mode: %s", modeStr))
 	prompt.Info(fmt.Sprintf("Proxy: localhost:%d", defaultPort))
-	prompt.Info("Run `tokara` to start the proxy daemon")
-	prompt.Info("Run `tokara status` for live stats")
+	prompt.Info("Run `tokara` to start the proxy dashboard")
+	prompt.Info("Run `tokara run claude` to launch Claude Code through the proxy")
 	prompt.Blank()
 
 	return true

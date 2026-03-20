@@ -13,6 +13,8 @@ type Config struct {
 	Port                 int
 	APIKey               string
 	APIBase              string
+	BindAddress          string
+	AuthToken            string
 	CompactionThreshold  float64
 	PrecomputeThreshold  float64
 	PreserveRecentTurns  int
@@ -24,6 +26,8 @@ func Defaults() Config {
 	return Config{
 		Port:                18741,
 		APIBase:             "https://api.tokara.dev",
+		BindAddress:         "127.0.0.1",
+		AuthToken:           "",
 		CompactionThreshold: 0.80,
 		PrecomputeThreshold: 0.60,
 		PreserveRecentTurns: 4,
@@ -34,6 +38,10 @@ func Defaults() Config {
 func DefaultPath() string {
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, ".tokara", "config.toml")
+}
+
+func (c Config) ListenAddr() string {
+	return fmt.Sprintf("%s:%d", c.BindAddress, c.Port)
 }
 
 func LoadFile(path string) (Config, error) {
@@ -79,6 +87,10 @@ func LoadFile(path string) (Config, error) {
 			if v, err := strconv.Atoi(val); err == nil {
 				cfg.PreserveRecentTurns = v
 			}
+		case "bind_address":
+			cfg.BindAddress = val
+		case "auth_token":
+			cfg.AuthToken = val
 		case "log_file":
 			cfg.LogFile = val
 		}
@@ -98,6 +110,12 @@ func (c *Config) ApplyEnv() {
 	if v := os.Getenv("TOKARA_API_BASE"); v != "" {
 		c.APIBase = v
 	}
+	if v := os.Getenv("TOKARA_BIND_ADDRESS"); v != "" {
+		c.BindAddress = v
+	}
+	if v := os.Getenv("TOKARA_AUTH_TOKEN"); v != "" {
+		c.AuthToken = v
+	}
 }
 
 func (c *Config) HasAPIKey() bool {
@@ -115,6 +133,12 @@ func (c Config) SaveFile(path string) error {
 	}
 	if c.APIBase != "" && c.APIBase != "https://api.tokara.dev" {
 		lines = append(lines, fmt.Sprintf("api_base = \"%s\"", c.APIBase))
+	}
+	if c.BindAddress != "" && c.BindAddress != "127.0.0.1" {
+		lines = append(lines, fmt.Sprintf("bind_address = \"%s\"", c.BindAddress))
+	}
+	if c.AuthToken != "" {
+		lines = append(lines, fmt.Sprintf("auth_token = \"%s\"", c.AuthToken))
 	}
 	lines = append(lines, fmt.Sprintf("compaction_threshold = %.2f", c.CompactionThreshold))
 	lines = append(lines, fmt.Sprintf("precompute_threshold = %.2f", c.PrecomputeThreshold))

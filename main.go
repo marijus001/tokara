@@ -20,6 +20,7 @@ import (
 	"github.com/marijus001/tokara/internal/config"
 	tkctx "github.com/marijus001/tokara/internal/context"
 	"github.com/marijus001/tokara/internal/detect"
+	"github.com/marijus001/tokara/internal/launcher"
 	"github.com/marijus001/tokara/internal/proxy"
 	"github.com/marijus001/tokara/internal/session"
 	"github.com/marijus001/tokara/internal/setup"
@@ -27,7 +28,7 @@ import (
 	"github.com/marijus001/tokara/internal/tui"
 )
 
-const version = "0.5.4"
+const version = "0.5.5"
 
 func main() {
 	// Prevent charmbracelet/colorprofile from querying terminal (can hang when spawned from npx)
@@ -36,6 +37,7 @@ func main() {
 	}
 
 	port := flag.Int("port", 0, "override proxy port")
+	bind := flag.String("bind", "", "override bind address (e.g. 0.0.0.0)")
 	showVersion := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
 
@@ -70,6 +72,15 @@ func main() {
 		case "demo":
 			runDemo()
 			return
+		case "run":
+			if len(args) < 2 {
+				fmt.Println("  Usage: tokara run <tool>")
+				fmt.Println()
+				fmt.Println("  Available tools: claude, codex, aider, continue")
+				os.Exit(1)
+			}
+			runWithTool(args[1])
+			return
 		case "help", "--help", "-h":
 			printHelp()
 			return
@@ -95,6 +106,9 @@ func main() {
 
 	if *port > 0 {
 		cfg.Port = *port
+	}
+	if *bind != "" {
+		cfg.BindAddress = *bind
 	}
 
 	// Run the proxy in the foreground
@@ -156,9 +170,13 @@ func runServer(cfg config.Config) {
 		w.Write(data)
 	})
 
-	mux.Handle("/", p)
+	if cfg.AuthToken != "" {
+		mux.Handle("/", authMiddleware(cfg.AuthToken, p))
+	} else {
+		mux.Handle("/", p)
+	}
 
-	addr := fmt.Sprintf("127.0.0.1:%d", cfg.Port)
+	addr := cfg.ListenAddr()
 	server := &http.Server{Addr: addr, Handler: mux}
 
 	mode := "free"
@@ -247,40 +265,28 @@ func runServer(cfg config.Config) {
 			return c.SaveFile(config.DefaultPath())
 		},
 		GetTools: func() []tui.ToolItem {
-			gatewayURL := fmt.Sprintf("http://127.0.0.1:%d", cfg.Port)
+			gatewayURL := fmt.Sprintf("http://%s", cfg.ListenAddr())
 			allTools := detect.AllTools(gatewayURL)
 			var items []tui.ToolItem
 			for _, t := range allTools {
 				detected := detect.Detect(t)
-				enabled := false
-				if detected {
-					enabled = setup.IsToolConfigured(t, gatewayURL)
-				}
-				canToggle := detected && t.ConfigType != detect.ConfigNote
 				items = append(items, tui.ToolItem{
-					ID:        t.ID,
-					Name:      t.Name,
-					Desc:      t.Desc,
-					Detected:  detected,
-					Enabled:   enabled,
-					CanToggle: canToggle,
+					ID:       t.ID,
+					Name:     t.Name,
+					Desc:     t.Desc,
+					Detected: detected,
+					Cmd:      t.Cmd,
+					Note:     t.Note,
 				})
 			}
 			return items
 		},
-		ToggleTool: func(id string, enable bool) error {
-			gatewayURL := fmt.Sprintf("http://127.0.0.1:%d", cfg.Port)
+		LaunchTool: func(id string) error {
+			gatewayURL := fmt.Sprintf("http://%s", cfg.ListenAddr())
 			allTools := detect.AllTools(gatewayURL)
 			for _, t := range allTools {
 				if t.ID == id {
-					if enable {
-						result := setup.ConfigureTool(t, gatewayURL)
-						if !result.Success {
-							return fmt.Errorf("%s", result.Details)
-						}
-						return nil
-					}
-					return setup.UnconfigureTool(t)
+					return launcher.Launch(t.Cmd, gatewayURL)
 				}
 			}
 			return fmt.Errorf("tool %q not found", id)
@@ -307,6 +313,60 @@ func runServer(cfg config.Config) {
 
 	// TUI exited — shut down server
 	server.Close()
+}
+
+func runWithTool(toolName string) {
+	// Load config
+	cfg, err := config.LoadFile(config.DefaultPath())
+	if err != nil {
+		cfg = config.Defaults()
+	}
+	cfg.ApplyEnv()
+
+	gatewayURL := fmt.Sprintf("http://%s", cfg.ListenAddr())
+	allTools := detect.AllTools(gatewayURL)
+
+	// Find the requested tool
+	var tool *detect.Tool
+	for i := range allTools {
+		if allTools[i].ID == toolName || strings.EqualFold(allTools[i].Name, toolName) {
+			tool = &allTools[i]
+			break
+		}
+	}
+	if tool == nil || tool.Cmd == "" {
+		fmt.Printf("  Unknown or non-launchable tool: %s\n", toolName)
+		fmt.Println()
+		fmt.Println("  Available tools:")
+		for _, t := range allTools {
+			if t.Cmd != "" {
+				fmt.Printf("    tokara run %s\n", t.ID)
+			}
+		}
+		fmt.Println()
+		os.Exit(1)
+	}
+
+	// Launch the tool in a new terminal, then start the TUI
+	if err := launcher.Launch(tool.Cmd, gatewayURL); err != nil {
+		fmt.Printf("  Could not launch %s: %v\n", tool.Name, err)
+		fmt.Printf("  Run manually with: ANTHROPIC_BASE_URL=%s %s\n", gatewayURL, tool.Cmd)
+		fmt.Println()
+	}
+
+	// Start proxy + TUI
+	runServer(cfg)
+}
+
+func authMiddleware(token string, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth := r.Header.Get("Authorization")
+		if auth != "Bearer "+token {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func runUpgrade() {
@@ -389,6 +449,7 @@ func printHelp() {
 	fmt.Println()
 	fmt.Println("  Commands:")
 	fmt.Println("    tokara            Start the proxy (foreground, Ctrl+C to stop)")
+	fmt.Println("    tokara run <tool>  Launch a tool through the proxy (e.g. tokara run claude)")
 	fmt.Println("    tokara setup      Run setup wizard again")
 	fmt.Println("    tokara config     Show current configuration")
 	fmt.Println("    tokara upgrade    Add API key for paid features")

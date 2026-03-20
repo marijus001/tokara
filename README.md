@@ -17,17 +17,22 @@ curl -fsSL https://github.com/marijus001/tokara/releases/latest/download/tokara-
 ## Quick Start
 
 ```bash
-tokara              # start proxy + live TUI dashboard
-tokara setup        # detect and configure your AI tools
-tokara demo         # run with mock upstreams (no API key needed)
+tokara run claude    # launch Claude Code through the proxy
+tokara run aider     # launch Aider through the proxy
+tokara               # start proxy + live TUI dashboard
+tokara demo          # run with mock upstreams (no API key needed)
 ```
 
-The setup wizard detects your AI tools (Claude Code, Codex, Aider, Continue.dev) and configures them to route through the proxy automatically.
+`tokara run <tool>` opens a new terminal with the tool pre-configured to route all LLM traffic through the proxy. The TUI dashboard stays in the original terminal showing live stats.
 
 ## How It Works
 
 ```
-AI Tool → localhost:18741 (tokara proxy) → LLM API
+tokara run claude
+  ├─ Terminal 1: TUI dashboard (live stats)
+  └─ Terminal 2: claude (ANTHROPIC_BASE_URL → localhost:18741)
+                    ↓
+              tokara proxy → LLM API
 ```
 
 - **Under 60%** of context window: requests pass through untouched
@@ -44,15 +49,18 @@ The gateway runs a live terminal dashboard:
 |-----|-------|
 | `l` | Logs — live stream of proxy events |
 | `c` | Config — view and edit settings inline |
-| `t` | Tools — toggle AI tool integrations on/off |
+| `t` | Tools — detect and launch AI tools |
 | `h` | Help — keyboard shortcuts and info |
 | `u` | Upgrade — enter API key |
 | `q` | Quit |
+
+Press `t` in the TUI to see detected tools. Select one and press enter to launch it in a new terminal routed through the proxy.
 
 ## Commands
 
 | Command | Description |
 |---------|-------------|
+| `tokara run <tool>` | Launch a tool through the proxy |
 | `tokara` | Start proxy + TUI dashboard |
 | `tokara setup` | Run setup wizard |
 | `tokara config` | View/edit configuration |
@@ -64,17 +72,31 @@ The gateway runs a live terminal dashboard:
 
 ## Supported Tools
 
-| Tool | Detection | Configuration |
-|------|-----------|---------------|
-| Claude Code | Auto | Shell profile env vars |
-| OpenAI Codex | Auto | Shell profile env vars |
-| Aider | Auto | Shell profile env vars |
-| Continue.dev | Auto | Shell profile env vars |
-| Cursor | Auto | Manual (settings UI) |
-| Windsurf | Auto | Manual (settings UI) |
-| GitHub Copilot | Auto | Not supported |
+| Tool | Launch | Detection |
+|------|--------|-----------|
+| Claude Code | `tokara run claude` | Auto |
+| OpenAI Codex | `tokara run codex` | Auto |
+| Aider | `tokara run aider` | Auto |
+| Continue.dev | `tokara run continue` | Auto |
+| Cursor | Manual (settings UI) | Auto |
+| Windsurf | Manual (settings UI) | Auto |
 
-When you enable a tool in the TUI, Tokara patches your shell profile (`~/.zshrc`, `~/.bashrc`, PowerShell profile) with SDK env vars so all new terminal sessions route through the proxy.
+## Enterprise
+
+For on-premise deployment, bind the proxy to all interfaces:
+
+```bash
+tokara --bind 0.0.0.0
+```
+
+Add an auth token in `~/.tokara/config.toml`:
+
+```toml
+bind_address = "0.0.0.0"
+auth_token = "your-secret-token"
+```
+
+Clients must include `Authorization: Bearer <token>` in requests. IT can route all LLM traffic through the proxy at the network level — no client-side configuration needed.
 
 ## Free vs Paid
 
@@ -100,7 +122,11 @@ compaction_threshold = 0.80
 precompute_threshold = 0.60
 preserve_recent_turns = 4
 
-# Uncomment for paid features
+# Enterprise
+# bind_address = "0.0.0.0"
+# auth_token = "your-secret-token"
+
+# Paid features
 # api_key = "tk_live_..."
 ```
 

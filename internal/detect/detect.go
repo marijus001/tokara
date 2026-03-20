@@ -8,100 +8,71 @@ import (
 	"strings"
 )
 
-// ConfigType describes how a tool is configured.
-type ConfigType int
-
-const (
-	ConfigEnv  ConfigType = iota // Set environment variables in shell profile
-	ConfigFile                   // Patch a config file
-	ConfigNote                   // Display a note (no auto-configuration)
-)
-
 // Tool represents a detectable AI coding tool.
 type Tool struct {
-	ID         string
-	Name       string
-	Desc       string
-	ConfigType ConfigType
-	EnvVars    map[string]string // For ConfigEnv: var name -> value
-	KeyVar     string            // For ConfigEnv: the API key env var name
-	ConfigPath string            // For ConfigFile: path to config file
-	Note       string            // For ConfigNote: message to display
+	ID   string // unique identifier
+	Name string // display name
+	Desc string // short description
+	Cmd  string // binary name to spawn (empty for GUI-only tools)
+	Note string // manual config instructions (for tools that can't be auto-launched)
 }
 
 // SDKEnvVars returns the env vars that intercept all LLM SDK traffic.
 // Setting these routes requests from any tool using these SDKs through the proxy.
 func SDKEnvVars(gatewayURL string) map[string]string {
 	return map[string]string{
-		"ANTHROPIC_BASE_URL": gatewayURL,           // Anthropic SDK
-		"OPENAI_BASE_URL":    gatewayURL,            // OpenAI SDK
-		"OPENAI_API_BASE":    gatewayURL,            // Aider / older OpenAI SDK
-		"ANTHROPIC_API_BASE": gatewayURL,            // Aider / LiteLLM
+		"ANTHROPIC_BASE_URL": gatewayURL,  // Anthropic SDK
+		"OPENAI_BASE_URL":    gatewayURL,  // OpenAI SDK
+		"OPENAI_API_BASE":    gatewayURL,  // Aider / older OpenAI SDK
+		"ANTHROPIC_API_BASE": gatewayURL,  // Aider / LiteLLM
 	}
 }
 
 // AllTools returns all known AI tools.
 func AllTools(gatewayURL string) []Tool {
-	sdkVars := SDKEnvVars(gatewayURL)
-
 	return []Tool{
 		{
-			ID:         "claude",
-			Name:       "Claude Code",
-			Desc:       "Anthropic's official coding CLI",
-			ConfigType: ConfigEnv,
-			EnvVars:    sdkVars,
+			ID:   "claude",
+			Name: "Claude Code",
+			Desc: "Anthropic's official coding CLI",
+			Cmd:  "claude",
 		},
 		{
-			ID:         "codex",
-			Name:       "OpenAI Codex",
-			Desc:       "OpenAI's coding agent CLI",
-			ConfigType: ConfigEnv,
-			EnvVars:    sdkVars,
+			ID:   "codex",
+			Name: "OpenAI Codex",
+			Desc: "OpenAI's coding agent CLI",
+			Cmd:  "codex",
 		},
 		{
-			ID:         "opencode",
-			Name:       "OpenCode",
-			Desc:       "Terminal-based AI coding assistant (WIP)",
-			ConfigType: ConfigNote,
-			Note:       "OpenCode routing is a work in progress.",
+			ID:   "aider",
+			Name: "Aider",
+			Desc: "Terminal AI pair programming",
+			Cmd:  "aider",
 		},
 		{
-			ID:         "aider",
-			Name:       "Aider",
-			Desc:       "Terminal AI pair programming",
-			ConfigType: ConfigEnv,
-			EnvVars:    sdkVars,
+			ID:   "continue",
+			Name: "Continue.dev",
+			Desc: "VS Code AI extension",
+			Cmd:  "continue",
 		},
 		{
-			ID:         "continue",
-			Name:       "Continue.dev",
-			Desc:       "VS Code AI extension",
-			ConfigType: ConfigEnv,
-			EnvVars:    sdkVars,
+			ID:   "cursor",
+			Name: "Cursor",
+			Desc: "AI code editor",
+			Note: "Set proxy in Cursor > Settings > Models > Override OpenAI Base URL:\n  " + gatewayURL + "/v1",
 		},
 		{
-			ID:         "cursor",
-			Name:       "Cursor",
-			Desc:       "AI code editor",
-			ConfigType: ConfigNote,
-			Note:       "Set proxy in Cursor > Settings > Models > Override OpenAI Base URL:\n  " + gatewayURL + "/v1",
-		},
-		{
-			ID:         "windsurf",
-			Name:       "Windsurf",
-			Desc:       "Codeium's AI IDE",
-			ConfigType: ConfigNote,
-			Note:       "Set proxy in Windsurf Settings > Custom Model Provider:\n  Base URL: " + gatewayURL + "/v1",
-		},
-		{
-			ID:         "copilot",
-			Name:       "GitHub Copilot",
-			Desc:       "GitHub's AI pair programmer",
-			ConfigType: ConfigNote,
-			Note:       "Copilot doesn't support custom API endpoints.",
+			ID:   "windsurf",
+			Name: "Windsurf",
+			Desc: "Codeium's AI IDE",
+			Note: "Set proxy in Windsurf Settings > Custom Model Provider:\n  Base URL: " + gatewayURL + "/v1",
 		},
 	}
+}
+
+// CanLaunch returns true if the tool can be launched via `tokara run`.
+func CanLaunch(tool Tool) bool {
+	return tool.Cmd != ""
 }
 
 // Detect checks if a tool is installed on this machine.
@@ -111,8 +82,6 @@ func Detect(tool Tool) bool {
 		return cmdExists("claude") || cmdExists("claude.cmd") || winBinExists("claude")
 	case "codex":
 		return cmdExists("codex") || cmdExists("openai") || winBinExists("codex")
-	case "opencode":
-		return cmdExists("opencode") || winBinExists("opencode")
 	case "aider":
 		return cmdExists("aider") || winBinExists("aider")
 	case "continue":
@@ -122,11 +91,20 @@ func Detect(tool Tool) bool {
 		return cmdExists("cursor") || cursorInstalled()
 	case "windsurf":
 		return cmdExists("windsurf") || windsurfInstalled()
-	case "copilot":
-		return copilotInstalled()
 	default:
 		return false
 	}
+}
+
+// DetectAll returns all tools that are detected on this machine.
+func DetectAll(tools []Tool) []Tool {
+	var found []Tool
+	for _, t := range tools {
+		if Detect(t) {
+			found = append(found, t)
+		}
+	}
+	return found
 }
 
 func continueInstalled() bool {
@@ -163,47 +141,6 @@ func windsurfInstalled() bool {
 	default:
 		return cmdExists("windsurf")
 	}
-}
-
-// DetectAll returns all tools that are detected on this machine.
-func DetectAll(tools []Tool) []Tool {
-	var found []Tool
-	for _, t := range tools {
-		if Detect(t) {
-			found = append(found, t)
-		}
-	}
-	return found
-}
-
-// DetectSelected detects only the tools at the given indices.
-func DetectSelected(tools []Tool, indices []int) []Tool {
-	var found []Tool
-	for _, i := range indices {
-		if i >= 0 && i < len(tools) && Detect(tools[i]) {
-			found = append(found, tools[i])
-		}
-	}
-	return found
-}
-
-// ShellProfile returns the path to the user's shell profile file.
-func ShellProfile() string {
-	home, _ := os.UserHomeDir()
-	shell := os.Getenv("SHELL")
-
-	if runtime.GOOS == "windows" {
-		// Windows: use PowerShell profile
-		return filepath.Join(home, "Documents", "PowerShell", "Microsoft.PowerShell_profile.ps1")
-	}
-
-	if strings.Contains(shell, "zsh") {
-		return filepath.Join(home, ".zshrc")
-	}
-	if strings.Contains(shell, "fish") {
-		return filepath.Join(home, ".config", "fish", "config.fish")
-	}
-	return filepath.Join(home, ".bashrc")
 }
 
 func cmdExists(name string) bool {
@@ -275,20 +212,5 @@ func winBinExists(name string) bool {
 		return true
 	}
 
-	return false
-}
-
-func copilotInstalled() bool {
-	home, _ := os.UserHomeDir()
-	extDir := filepath.Join(home, ".vscode", "extensions")
-	entries, err := os.ReadDir(extDir)
-	if err != nil {
-		return false
-	}
-	for _, e := range entries {
-		if strings.HasPrefix(e.Name(), "github.copilot") {
-			return true
-		}
-	}
 	return false
 }

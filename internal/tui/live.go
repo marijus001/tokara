@@ -37,12 +37,12 @@ type ConfigItem struct {
 
 // ToolItem represents a tool's state for the interactive tools panel.
 type ToolItem struct {
-	ID        string
-	Name      string
-	Desc      string
-	Detected  bool
-	Enabled   bool
-	CanToggle bool // false for ConfigNote types or not-found tools
+	ID       string
+	Name     string
+	Desc     string
+	Detected bool
+	Cmd      string // binary name (empty for GUI-only tools)
+	Note     string // manual config instructions
 }
 
 // Callbacks provides data to the TUI without importing other packages.
@@ -51,7 +51,7 @@ type Callbacks struct {
 	GetConfig   func() []ConfigItem // returns structured config items
 	SaveConfig  func(field, value string) error
 	GetTools    func() []ToolItem
-	ToggleTool  func(id string, enable bool) error
+	LaunchTool  func(id string) error
 	SaveAPIKey  func(key string) error
 }
 
@@ -212,17 +212,15 @@ func (m LiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.toolsCursor++
 				}
 				return m, nil
-			case " ":
+			case "enter", " ":
 				if m.toolsCursor >= 0 && m.toolsCursor < len(m.toolsList) {
 					item := m.toolsList[m.toolsCursor]
-					if item.CanToggle {
-						newEnabled := !item.Enabled
-						if m.cb.ToggleTool != nil {
-							if err := m.cb.ToggleTool(item.ID, newEnabled); err != nil {
+					if item.Detected && item.Cmd != "" {
+						if m.cb.LaunchTool != nil {
+							if err := m.cb.LaunchTool(item.ID); err != nil {
 								m.toolsMsg = fmt.Sprintf("  \u2717 %v", err)
 							} else {
-								m.toolsMsg = ""
-								m.refreshTools()
+								m.toolsMsg = fmt.Sprintf("  \u2713 Launched %s in new terminal", item.Name)
 							}
 						}
 					}
@@ -340,10 +338,10 @@ func (m LiveModel) View() string {
 
 	b.WriteString("\n")
 	b.WriteString(fmt.Sprintf("  %s %s v%s %s proxy running\n",
-		titleStyle.Render("▓"),
+		titleStyle.Render("\u2593"),
 		nameStyle.Render("tokara"),
 		m.version,
-		dividerStyle.Render("—"),
+		dividerStyle.Render("\u2014"),
 	))
 	b.WriteString("\n")
 	b.WriteString(fmt.Sprintf("  %s %s    %s %s    %s %s\n",
@@ -358,13 +356,13 @@ func (m LiveModel) View() string {
 	b.WriteString(fmt.Sprintf("  %s %s   %s   %s %s   %s   %s %s   %s   %s %s\n",
 		labelStyle.Render("Requests"),
 		valueStyle.Render(formatNum(m.snapshot.Requests)),
-		dividerStyle.Render("│"),
+		dividerStyle.Render("\u2502"),
 		labelStyle.Render("Compactions"),
 		valueStyle.Render(formatNum(m.snapshot.Compactions)),
-		dividerStyle.Render("│"),
+		dividerStyle.Render("\u2502"),
 		labelStyle.Render("Tokens saved"),
 		valueStyle.Render(formatNum(m.snapshot.TokensSaved)),
-		dividerStyle.Render("│"),
+		dividerStyle.Render("\u2502"),
 		labelStyle.Render("Sessions"),
 		valueStyle.Render(fmt.Sprintf("%d", m.snapshot.Sessions)),
 	))
@@ -379,7 +377,7 @@ func (m LiveModel) View() string {
 	if divWidth > 80 {
 		divWidth = 80
 	}
-	b.WriteString(fmt.Sprintf("  %s\n", dividerStyle.Render(strings.Repeat("─", divWidth))))
+	b.WriteString(fmt.Sprintf("  %s\n", dividerStyle.Render(strings.Repeat("\u2500", divWidth))))
 
 	// ── Bottom panel ──
 
@@ -422,7 +420,7 @@ func (m LiveModel) View() string {
 		b.WriteString(fmt.Sprintf("  %s\n", helpStyle.Render("[\u2191/\u2193] move  [enter] edit  [esc] back")))
 	case m.activePanel == panelTools:
 		b.WriteString(fmt.Sprintf("  %s\n",
-			helpStyle.Render("[\u2191/\u2193] move  [space] toggle  [esc] back  [q] quit"),
+			helpStyle.Render("[\u2191/\u2193] move  [enter] launch  [esc] back  [q] quit"),
 		))
 	default:
 		b.WriteString(fmt.Sprintf("  %s\n",
@@ -470,7 +468,7 @@ func (m LiveModel) renderLogs(maxLines int) string {
 			}
 			action = accentStyle.Render(fmt.Sprintf("%-14s", short))
 			if e.InputK > 0 {
-				detail = fmt.Sprintf("  %dK → %dK", e.InputK, e.OutputK)
+				detail = fmt.Sprintf("  %dK \u2192 %dK", e.InputK, e.OutputK)
 				if e.SavedPct > 0 {
 					detail += fmt.Sprintf(" (%d%%)", e.SavedPct)
 				}
@@ -541,10 +539,10 @@ func (m LiveModel) renderTools() string {
 	b.WriteString(fmt.Sprintf("  %s\n\n", labelStyle.Render("AI Tools:")))
 
 	greenDot := lipgloss.NewStyle().Foreground(lipgloss.Color("#22c55e"))
-	enabledTag := lipgloss.NewStyle().Foreground(lipgloss.Color("#22c55e"))
-	readyTag := lipgloss.NewStyle().Foreground(lipgloss.Color("#eab308"))
+	launchTag := lipgloss.NewStyle().Foreground(lipgloss.Color("#eab308"))
+	manualTag := lipgloss.NewStyle().Foreground(dimmed).Italic(true)
 	notFoundTag := lipgloss.NewStyle().Foreground(dimmed)
-	infoTag := lipgloss.NewStyle().Foreground(dimmed).Italic(true)
+	noteStyle := lipgloss.NewStyle().Foreground(dimmed).Italic(true)
 	nameActive := lipgloss.NewStyle().Foreground(white).Bold(true)
 	nameDim := lipgloss.NewStyle().Foreground(muted)
 	descStyle := lipgloss.NewStyle().Foreground(muted)
@@ -579,17 +577,20 @@ func (m LiveModel) renderTools() string {
 
 		// Status tag
 		var tag string
-		if item.Enabled {
-			tag = enabledTag.Render("[enabled]")
-		} else if item.Detected && item.CanToggle {
-			tag = readyTag.Render("[ready]")
-		} else if item.Detected && !item.CanToggle {
-			tag = infoTag.Render("(info only)")
+		if item.Detected && item.Cmd != "" {
+			tag = launchTag.Render("[launch]")
+		} else if item.Detected {
+			tag = manualTag.Render("(manual)")
 		} else {
 			tag = notFoundTag.Render("(not found)")
 		}
 
 		b.WriteString(fmt.Sprintf("  %s%s%s  %s  %s\n", cursor, dot, name, desc, tag))
+
+		// Show Note below the selected tool entry
+		if item.Note != "" && i == m.toolsCursor {
+			b.WriteString(fmt.Sprintf("        %s\n", noteStyle.Render(item.Note)))
+		}
 	}
 
 	if m.toolsMsg != "" {
@@ -643,18 +644,19 @@ func (m LiveModel) renderHelp() string {
 func (m LiveModel) renderUpgrade() string {
 	var b strings.Builder
 	b.WriteString("\n")
-	b.WriteString(fmt.Sprintf("  %s\n\n", labelStyle.Render("Upgrade — Add API Key:")))
+	b.WriteString(fmt.Sprintf("  %s\n\n", labelStyle.Render("Upgrade \u2014 Add API Key:")))
 
 	linkStyle := lipgloss.NewStyle().Foreground(rose).Bold(true)
 	inputStyle := lipgloss.NewStyle().Foreground(white)
-	cursor := lipgloss.NewStyle().Foreground(rose).Render("█")
+	cursor := lipgloss.NewStyle().Foreground(rose).Render("\u2588")
 
 	boxStyle := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(rose).
-		Padding(0, 2)
-	b.WriteString(fmt.Sprintf("  %s\n\n",
-		boxStyle.Render(fmt.Sprintf("Get your key at %s  —  press [u] to open", linkStyle.Render("tokara.dev/dashboard"))),
+		Padding(0, 2).
+		MarginLeft(2)
+	b.WriteString(fmt.Sprintf("%s\n\n",
+		boxStyle.Render(fmt.Sprintf("Get your key at %s  \u2014  press [u] to open", linkStyle.Render("tokara.dev/dashboard"))),
 	))
 
 	b.WriteString(fmt.Sprintf("  %s %s%s\n",
