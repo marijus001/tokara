@@ -13,6 +13,7 @@ import (
 	"github.com/marijus001/tokara/internal/compactor"
 	tkctx "github.com/marijus001/tokara/internal/context"
 	"github.com/marijus001/tokara/internal/message"
+	"github.com/marijus001/tokara/internal/model"
 	"github.com/marijus001/tokara/internal/provider"
 	"github.com/marijus001/tokara/internal/session"
 	"github.com/marijus001/tokara/internal/stats"
@@ -135,6 +136,8 @@ func (p *Proxy) maybeCompact(body []byte, prov provider.Provider) []byte {
 		}
 	}
 
+	ctxWindow := model.ContextWindow(parsed.Model)
+
 	sessID := session.SessionID(prov.Name, parsed.Model, parsed.SystemPrompt)
 	result := p.opts.Compactor.Process(sessID, parsed.Messages, parsed.SystemPrompt)
 
@@ -157,12 +160,14 @@ func (p *Proxy) maybeCompact(body []byte, prov provider.Provider) []byte {
 
 		if p.opts.StatsCollector != nil {
 			p.opts.StatsCollector.AddEvent(stats.Event{
-				Provider: prov.Name,
-				Model:    parsed.Model,
-				Action:   action,
-				InputK:   result.OriginalTokens / 1000,
-				OutputK:  result.CompactedTokens / 1000,
-				SavedPct: int(savedPct),
+				Provider:      prov.Name,
+				Model:         parsed.Model,
+				Action:        action,
+				InputK:        result.OriginalTokens / 1000,
+				OutputK:       result.CompactedTokens / 1000,
+				SavedPct:      int(savedPct),
+				ContextTokens: result.OriginalTokens,
+				ContextWindow: ctxWindow,
 			})
 		}
 
@@ -181,20 +186,24 @@ func (p *Proxy) maybeCompact(body []byte, prov provider.Provider) []byte {
 
 		if p.opts.StatsCollector != nil {
 			p.opts.StatsCollector.AddEvent(stats.Event{
-				Provider: prov.Name,
-				Model:    parsed.Model,
-				Action:   "precomputing",
-				InputK:   result.OriginalTokens / 1000,
+				Provider:      prov.Name,
+				Model:         parsed.Model,
+				Action:        "precomputing",
+				InputK:        result.OriginalTokens / 1000,
+				ContextTokens: result.OriginalTokens,
+				ContextWindow: ctxWindow,
 			})
 		}
 
 	case compactor.ActionPassThrough:
 		if p.opts.StatsCollector != nil {
 			p.opts.StatsCollector.AddEvent(stats.Event{
-				Provider: prov.Name,
-				Model:    parsed.Model,
-				Action:   "pass-through",
-				InputK:   result.OriginalTokens / 1000,
+				Provider:      prov.Name,
+				Model:         parsed.Model,
+				Action:        "pass-through",
+				InputK:        result.OriginalTokens / 1000,
+				ContextTokens: result.OriginalTokens,
+				ContextWindow: ctxWindow,
 			})
 		}
 	}

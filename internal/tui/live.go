@@ -368,6 +368,23 @@ func (m LiveModel) View() string {
 		labelStyle.Render("Sessions"),
 		valueStyle.Render(fmt.Sprintf("%d", m.snapshot.Sessions)),
 	))
+
+	// Context usage line (only shown when there's been traffic)
+	if m.snapshot.LastModel != "" {
+		contextInfo := fmt.Sprintf("%dK / %dK (%d%%)",
+			m.snapshot.LastContextK,
+			m.snapshot.ContextWindow/1000,
+			m.snapshot.LastContextPct,
+		)
+		b.WriteString(fmt.Sprintf("\n  %s %s   %s   %s %s\n",
+			labelStyle.Render("Context"),
+			valueStyle.Render(contextInfo),
+			dividerStyle.Render("\u2502"),
+			labelStyle.Render("Model"),
+			valueStyle.Render(m.snapshot.LastModel),
+		))
+	}
+
 	b.WriteString("\n")
 
 	// ── Divider ──

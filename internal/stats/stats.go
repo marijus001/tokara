@@ -8,24 +8,30 @@ import (
 
 // Snapshot holds a point-in-time view of proxy statistics.
 type Snapshot struct {
-	Uptime       string  `json:"uptime"`
-	UptimeSecs   int64   `json:"uptime_secs"`
-	Requests     int64   `json:"requests"`
-	Compactions  int64   `json:"compactions"`
-	TokensSaved  int64   `json:"tokens_saved"`
-	Sessions     int     `json:"sessions"`
-	RecentEvents []Event `json:"recent_events"`
+	Uptime         string  `json:"uptime"`
+	UptimeSecs     int64   `json:"uptime_secs"`
+	Requests       int64   `json:"requests"`
+	Compactions    int64   `json:"compactions"`
+	TokensSaved    int64   `json:"tokens_saved"`
+	Sessions       int     `json:"sessions"`
+	RecentEvents   []Event `json:"recent_events"`
+	LastModel      string  `json:"last_model"`       // most recent model name
+	LastContextK   int     `json:"last_context_k"`   // most recent context size in K tokens
+	LastContextPct int     `json:"last_context_pct"` // context usage as % of model window
+	ContextWindow  int     `json:"context_window"`   // model's max context window in tokens
 }
 
 // Event represents a single proxy event for the TUI feed.
 type Event struct {
-	Timestamp string `json:"timestamp"`
-	Provider  string `json:"provider"`
-	Model     string `json:"model"`
-	Action    string `json:"action"` // "pass-through", "compacted", "precomputing"
-	InputK    int    `json:"input_k"`
-	OutputK   int    `json:"output_k"`
-	SavedPct  int    `json:"saved_pct"`
+	Timestamp     string `json:"timestamp"`
+	Provider      string `json:"provider"`
+	Model         string `json:"model"`
+	Action        string `json:"action"` // "pass-through", "compacted", "precomputing"
+	InputK        int    `json:"input_k"`
+	OutputK       int    `json:"output_k"`
+	SavedPct      int    `json:"saved_pct"`
+	ContextTokens int    `json:"context_tokens"` // estimated input tokens for this request
+	ContextWindow int    `json:"context_window"` // model's max context window
 }
 
 // Collector accumulates stats and events from the proxy.
@@ -124,15 +130,26 @@ func intToStr(n int) string {
 
 // BuildSnapshot creates a stats snapshot for the TUI.
 func (c *Collector) BuildSnapshot(requests, compactions, tokensSaved int64, sessions int) Snapshot {
-	return Snapshot{
+	recent := c.RecentEvents(c.maxEvents)
+	snap := Snapshot{
 		Uptime:       c.FormatUptime(),
 		UptimeSecs:   int64(c.Uptime().Seconds()),
 		Requests:     requests,
 		Compactions:  compactions,
 		TokensSaved:  tokensSaved,
 		Sessions:     sessions,
-		RecentEvents: c.RecentEvents(c.maxEvents),
+		RecentEvents: recent,
 	}
+	if len(recent) > 0 {
+		last := recent[0]
+		snap.LastModel = last.Model
+		snap.LastContextK = last.ContextTokens / 1000
+		snap.ContextWindow = last.ContextWindow
+		if last.ContextWindow > 0 {
+			snap.LastContextPct = last.ContextTokens * 100 / last.ContextWindow
+		}
+	}
+	return snap
 }
 
 // ToJSON serializes a snapshot to JSON bytes.
