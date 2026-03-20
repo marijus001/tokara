@@ -109,7 +109,17 @@ func (p *Proxy) maybeCompact(body []byte, prov provider.Provider) []byte {
 				MaxTokens: 4000,
 				Filter:    true,
 			})
-			if err == nil && len(chunks) > 0 {
+			if err != nil {
+				log.Printf("[rag] query failed: %v", err)
+				if p.opts.StatsCollector != nil {
+					p.opts.StatsCollector.AddEvent(stats.Event{
+						Timestamp: time.Now().Format("15:04"),
+						Provider:  prov.Name,
+						Model:     parsed.Model,
+						Action:    "rag-error",
+					})
+				}
+			} else if len(chunks) > 0 {
 				// Inject RAG context at position 0 (optimal per research)
 				ragContent := "[Relevant codebase context]\n"
 				for _, c := range chunks {

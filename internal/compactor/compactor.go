@@ -11,9 +11,11 @@
 package compactor
 
 import (
+	"log"
 	"strings"
 	"sync"
 
+	"github.com/marijus001/tokara/internal/api"
 	"github.com/marijus001/tokara/internal/compress"
 	"github.com/marijus001/tokara/internal/message"
 	"github.com/marijus001/tokara/internal/session"
@@ -59,9 +61,10 @@ type Result struct {
 
 // Compactor manages smart hybrid context compaction.
 type Compactor struct {
-	cfg   Config
-	store *session.Store
-	mu    sync.Mutex
+	cfg       Config
+	store     *session.Store
+	apiClient *api.Client // optional: paid tier remote compression
+	mu        sync.Mutex
 }
 
 // New creates a Compactor with the given config and session store.
@@ -70,6 +73,12 @@ func New(cfg Config, store *session.Store) *Compactor {
 		cfg:   cfg,
 		store: store,
 	}
+}
+
+// SetAPIClient enables remote compression via the Tokara API (paid tier).
+// When set, compression tries the remote API first, falling back to local.
+func (c *Compactor) SetAPIClient(client *api.Client) {
+	c.apiClient = client
 }
 
 // Process evaluates messages and decides whether/how to compact.
@@ -164,6 +173,7 @@ func (c *Compactor) precompute(sess *session.Session, msgs []message.Message) {
 }
 
 // compactMessages compacts old messages synchronously.
+// If a paid API client is set, tries remote compression first (distill strategy).
 func (c *Compactor) compactMessages(msgs []message.Message) ([]message.Message, int) {
 	preserve := c.cfg.PreserveRecentTurns
 	if preserve >= len(msgs) {
@@ -173,7 +183,13 @@ func (c *Compactor) compactMessages(msgs []message.Message) ([]message.Message, 
 	compactable := msgs[:len(msgs)-preserve]
 	recent := msgs[len(msgs)-preserve:]
 
-	summary := compactMessages(compactable)
+	// Try remote compression if API client is available
+	summary := c.tryRemoteCompress(compactable)
+	if summary == "" {
+		// Fall back to local compression
+		summary = compactMessages(compactable)
+	}
+
 	summaryMsg := message.Message{
 		Role:    "user",
 		Content: "[Conversation summary]\n" + summary,
@@ -184,6 +200,33 @@ func (c *Compactor) compactMessages(msgs []message.Message) ([]message.Message, 
 	result = append(result, recent...)
 
 	return result, len(compactable)
+}
+
+// tryRemoteCompress attempts to use the paid API for compression.
+// Returns empty string if unavailable or failed (caller falls back to local).
+func (c *Compactor) tryRemoteCompress(msgs []message.Message) string {
+	if c.apiClient == nil {
+		return ""
+	}
+
+	var text strings.Builder
+	for _, m := range msgs {
+		text.WriteString("[" + m.Role + "] " + m.Content + "\n\n")
+	}
+
+	resp, err := c.apiClient.Compress(api.CompressRequest{
+		Text:     text.String(),
+		Strategy: "distill",
+		Ratio:    0.5,
+	})
+	if err != nil {
+		log.Printf("[compactor] remote compress failed, falling back to local: %v", err)
+		return ""
+	}
+	if resp.Rejected || resp.Compressed == "" {
+		return ""
+	}
+	return resp.Compressed
 }
 
 // getCompactableMessages returns messages eligible for compaction

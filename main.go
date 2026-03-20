@@ -28,7 +28,7 @@ import (
 	"github.com/marijus001/tokara/internal/tui"
 )
 
-const version = "0.5.5"
+const version = "0.5.6"
 
 func main() {
 	// Prevent charmbracelet/colorprofile from querying terminal (can hang when spawned from npx)
@@ -140,6 +140,7 @@ func runServer(cfg config.Config) {
 	if cfg.HasAPIKey() {
 		client := api.NewClient(cfg.APIBase, cfg.APIKey)
 		ctxSource = tkctx.NewCloudSource(client)
+		comp.SetAPIClient(client) // enable remote compression for paid tier
 	}
 
 	collector := stats.NewCollector(50)
@@ -294,6 +295,11 @@ func runServer(cfg config.Config) {
 		SaveAPIKey: func(key string) error {
 			if !strings.HasPrefix(key, "tk_live_") && !strings.HasPrefix(key, "tk_test_") {
 				return fmt.Errorf("invalid key — must start with tk_live_ or tk_test_")
+			}
+			// Validate key with the API server
+			client := api.NewClient(cfg.APIBase, key)
+			if err := client.ValidateKey(); err != nil {
+				return fmt.Errorf("key validation failed: %v", err)
 			}
 			c, err := config.LoadFile(config.DefaultPath())
 			if err != nil {

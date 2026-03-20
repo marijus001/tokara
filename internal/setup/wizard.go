@@ -2,9 +2,11 @@ package setup
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/marijus001/tokara/internal/api"
 	"github.com/marijus001/tokara/internal/detect"
 	"github.com/marijus001/tokara/internal/prompt"
 )
@@ -37,12 +39,20 @@ func RunWizard(version string) bool {
 	if mode == 1 {
 		prompt.Blank()
 		apiKey = prompt.Ask("Enter your API key:", "")
-		if apiKey == "" || (len(apiKey) < 8) {
+		if apiKey == "" || (!strings.HasPrefix(apiKey, "tk_live_") && !strings.HasPrefix(apiKey, "tk_test_")) {
 			prompt.Fail("Invalid API key. Must start with tk_live_ or tk_test_")
 			prompt.Info("You can add it later with `tokara upgrade`")
 			apiKey = ""
 		} else {
-			prompt.OK("API key accepted")
+			// Validate with the API server
+			client := api.NewClient("https://api.tokara.dev", apiKey)
+			if err := client.ValidateKey(); err != nil {
+				prompt.Fail(fmt.Sprintf("Key validation failed: %v", err))
+				prompt.Info("You can try again later with `tokara upgrade`")
+				apiKey = ""
+			} else {
+				prompt.OK("API key validated")
+			}
 		}
 	}
 	prompt.Blank()

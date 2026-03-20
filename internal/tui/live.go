@@ -220,7 +220,9 @@ func (m LiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 							if err := m.cb.LaunchTool(item.ID); err != nil {
 								m.toolsMsg = fmt.Sprintf("  \u2717 %v", err)
 							} else {
-								m.toolsMsg = fmt.Sprintf("  \u2713 Launched %s in new terminal", item.Name)
+								// Switch back to logs panel so user sees live activity
+								m.activePanel = panelLogs
+								m.toolsMsg = ""
 							}
 						}
 					}

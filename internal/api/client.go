@@ -125,6 +125,19 @@ func (c *Client) Health() (*HealthResponse, error) {
 	return &resp, nil
 }
 
+// ValidateKey checks if the API key is accepted by the server.
+// Returns nil if valid, an error describing the problem otherwise.
+func (c *Client) ValidateKey() error {
+	resp, err := c.Health()
+	if err != nil {
+		return fmt.Errorf("cannot reach API: %w", err)
+	}
+	if resp.Status != "ok" {
+		return fmt.Errorf("API returned status: %s", resp.Status)
+	}
+	return nil
+}
+
 func (c *Client) post(path string, body interface{}, result interface{}) error {
 	data, err := json.Marshal(body)
 	if err != nil {
