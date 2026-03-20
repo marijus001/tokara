@@ -63,6 +63,23 @@ func (c *Collector) AddEvent(e Event) {
 	}
 }
 
+// UpdateLatestContext updates the most recent event with real token counts
+// from the API response. This replaces our rough estimate with accurate data.
+func (c *Collector) UpdateLatestContext(inputTokens, contextWindow int, modelName string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.events) == 0 {
+		return
+	}
+	e := &c.events[len(c.events)-1]
+	e.ContextTokens = inputTokens
+	e.ContextWindow = contextWindow
+	e.InputK = inputTokens / 1000
+	if modelName != "" {
+		e.Model = modelName
+	}
+}
+
 // RecentEvents returns the latest events.
 func (c *Collector) RecentEvents(n int) []Event {
 	c.mu.Lock()

@@ -175,8 +175,10 @@ func (p *Proxy) maybeCompact(body []byte, prov provider.Provider) []byte {
 		return body
 	}
 
-	// RAG context enrichment (paid tier)
-	if p.opts.ContextSource != nil && p.opts.ContextSource.Available() {
+	// RAG context enrichment (paid tier) — only if API key is configured
+	// NilSource.Available() returns false, so this block is skipped in free mode.
+	// CloudSource caches availability with 30s TTL.
+	if p.opts.ContextSource != nil && p.opts.ContextSource.Name() != "nil" && p.opts.ContextSource.Available() {
 		lastMsg := parsed.Messages[len(parsed.Messages)-1]
 		if lastMsg.Role == "user" && lastMsg.Content != "" {
 			chunks, err := p.opts.ContextSource.Query(lastMsg.Content, tkctx.QueryOpts{
@@ -274,7 +276,9 @@ func (p *Proxy) maybeCompact(body []byte, prov provider.Provider) []byte {
 		}
 
 	case compactor.ActionPassThrough:
-		if p.opts.StatsCollector != nil {
+		// Only log pass-through for requests with meaningful context (>1K tokens)
+		// to avoid spamming the TUI with tool-use and small requests
+		if p.opts.StatsCollector != nil && result.OriginalTokens > 1000 {
 			p.opts.StatsCollector.AddEvent(stats.Event{
 				Provider:      prov.Name,
 				Model:         parsed.Model,
@@ -370,24 +374,20 @@ func (p *Proxy) forward(w http.ResponseWriter, r *http.Request, upstream string,
 		respBuf.Write(body)
 	}
 
-	// Extract real token counts from the response and update stats
+	// Extract real token counts from the response and update the most recent stats event
 	if p.opts.StatsCollector != nil && resp.StatusCode == http.StatusOK && respBuf.Len() > 0 {
 		inputTokens, _ := p.extractUsageFromResponse(respBuf.Bytes(), prov.Name)
 		if inputTokens > 0 {
-			ctxWindow := model.ContextWindow(prov.Name) // will be overridden below if we can detect model
-			// Try to get model from the response for accurate window
+			// Get model name from response for accurate context window
+			modelName := ""
 			modelRe := regexp.MustCompile(`"model"\s*:\s*"([^"]+)"`)
 			if m := modelRe.FindStringSubmatch(respBuf.String()); len(m) > 1 {
-				ctxWindow = model.ContextWindow(m[1])
-				p.opts.StatsCollector.AddEvent(stats.Event{
-					Timestamp:     time.Now().Format("15:04"),
-					Provider:      prov.Name,
-					Model:         m[1],
-					Action:        "usage",
-					ContextTokens: inputTokens,
-					ContextWindow: ctxWindow,
-				})
+				modelName = m[1]
 			}
+			ctxWindow := model.ContextWindow(modelName)
+
+			// Update the most recent event with real token counts from the API response
+			p.opts.StatsCollector.UpdateLatestContext(inputTokens, ctxWindow, modelName)
 		}
 	}
 }
