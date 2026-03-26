@@ -29,6 +29,8 @@ type Options struct {
 	Compactor *compactor.Compactor
 	// ContextSource provides RAG context enrichment. If nil, no enrichment.
 	ContextSource tkctx.Source
+	// ProjectID is the active project for RAG queries. If empty, RAG is skipped.
+	ProjectID string
 	// StatsCollector records detailed events for the TUI. If nil, no events emitted.
 	StatsCollector *stats.Collector
 }
@@ -101,44 +103,68 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // extractUsageFromResponse parses API response data to get real token counts.
 // Works with both streaming (SSE) and non-streaming responses from all providers.
+// For streaming, we only need to scan the first ~2KB (message_start) and last ~2KB (message_delta).
 func (p *Proxy) extractUsageFromResponse(respData []byte, provName string) (inputTokens, outputTokens int) {
+	// For large streaming responses, only scan head and tail to find usage data
 	text := string(respData)
+	scanSize := 4096
+	head := text
+	tail := ""
+	if len(text) > scanSize*2 {
+		head = text[:scanSize]
+		tail = text[len(text)-scanSize:]
+	}
 
 	switch provName {
 	case "anthropic":
-		// Streaming: look for message_start event with usage
+		// Streaming: message_start event (near the top) has input_tokens
+		// message_delta event (near the end) has cumulative output_tokens
 		// Non-streaming: top-level usage object
 		re := regexp.MustCompile(`"input_tokens"\s*:\s*(\d+)`)
-		if m := re.FindStringSubmatch(text); len(m) > 1 {
+		// Check head first (message_start is the first SSE event)
+		if m := re.FindStringSubmatch(head); len(m) > 1 {
 			inputTokens, _ = strconv.Atoi(m[1])
 		}
+		// output_tokens: find the LARGEST value (last message_delta has cumulative count)
 		re2 := regexp.MustCompile(`"output_tokens"\s*:\s*(\d+)`)
-		// Find the LAST occurrence (streaming sends multiple, last is cumulative)
-		matches := re2.FindAllStringSubmatch(text, -1)
-		if len(matches) > 0 {
-			outputTokens, _ = strconv.Atoi(matches[len(matches)-1][1])
+		scanTarget := text
+		if tail != "" {
+			scanTarget = tail // output_tokens is near the end
+		}
+		matches := re2.FindAllStringSubmatch(scanTarget, -1)
+		for _, m := range matches {
+			if v, _ := strconv.Atoi(m[1]); v > outputTokens {
+				outputTokens = v
+			}
 		}
 
 	case "openai":
-		// Non-streaming: usage.prompt_tokens
-		// Streaming: final chunk with usage (if stream_options.include_usage was set)
+		// Streaming: final chunk has usage (near the end)
+		// Non-streaming: top-level usage object
+		scanTarget := text
+		if tail != "" {
+			scanTarget = tail
+		}
 		re := regexp.MustCompile(`"prompt_tokens"\s*:\s*(\d+)`)
-		if m := re.FindStringSubmatch(text); len(m) > 1 {
+		if m := re.FindStringSubmatch(scanTarget); len(m) > 1 {
 			inputTokens, _ = strconv.Atoi(m[1])
 		}
 		re2 := regexp.MustCompile(`"completion_tokens"\s*:\s*(\d+)`)
-		if m := re2.FindStringSubmatch(text); len(m) > 1 {
+		if m := re2.FindStringSubmatch(scanTarget); len(m) > 1 {
 			outputTokens, _ = strconv.Atoi(m[1])
 		}
 
 	case "google":
-		// usageMetadata.promptTokenCount
+		scanTarget := text
+		if tail != "" {
+			scanTarget = tail
+		}
 		re := regexp.MustCompile(`"promptTokenCount"\s*:\s*(\d+)`)
-		if m := re.FindStringSubmatch(text); len(m) > 1 {
+		if m := re.FindStringSubmatch(scanTarget); len(m) > 1 {
 			inputTokens, _ = strconv.Atoi(m[1])
 		}
 		re2 := regexp.MustCompile(`"candidatesTokenCount"\s*:\s*(\d+)`)
-		if m := re2.FindStringSubmatch(text); len(m) > 1 {
+		if m := re2.FindStringSubmatch(scanTarget); len(m) > 1 {
 			outputTokens, _ = strconv.Atoi(m[1])
 		}
 	}
@@ -175,10 +201,10 @@ func (p *Proxy) maybeCompact(body []byte, prov provider.Provider) []byte {
 		return body
 	}
 
-	// RAG context enrichment (paid tier) — only if API key is configured
+	// RAG context enrichment (paid tier) — only if API key is configured AND a project is indexed.
 	// NilSource.Available() returns false, so this block is skipped in free mode.
 	// CloudSource caches availability with 30s TTL.
-	if p.opts.ContextSource != nil && p.opts.ContextSource.Name() != "nil" && p.opts.ContextSource.Available() {
+	if p.opts.ContextSource != nil && p.opts.ContextSource.Name() != "nil" && p.opts.ProjectID != "" && p.opts.ContextSource.Available() {
 		lastMsg := parsed.Messages[len(parsed.Messages)-1]
 		if lastMsg.Role == "user" && lastMsg.Content != "" {
 			chunks, err := p.opts.ContextSource.Query(lastMsg.Content, tkctx.QueryOpts{
@@ -374,19 +400,22 @@ func (p *Proxy) forward(w http.ResponseWriter, r *http.Request, upstream string,
 		respBuf.Write(body)
 	}
 
-	// Extract real token counts from the response and update the most recent stats event
+	// Extract real token counts from the API response and emit a stats update.
+	// Only scan the first 4KB of the response (message_start has input_tokens).
 	if p.opts.StatsCollector != nil && resp.StatusCode == http.StatusOK && respBuf.Len() > 0 {
 		inputTokens, _ := p.extractUsageFromResponse(respBuf.Bytes(), prov.Name)
-		if inputTokens > 0 {
-			// Get model name from response for accurate context window
+		if inputTokens > 1000 { // Only update for meaningful requests
 			modelName := ""
+			// Scan just the head for model name
+			head := respBuf.String()
+			if len(head) > 4096 {
+				head = head[:4096]
+			}
 			modelRe := regexp.MustCompile(`"model"\s*:\s*"([^"]+)"`)
-			if m := modelRe.FindStringSubmatch(respBuf.String()); len(m) > 1 {
+			if m := modelRe.FindStringSubmatch(head); len(m) > 1 {
 				modelName = m[1]
 			}
 			ctxWindow := model.ContextWindow(modelName)
-
-			// Update the most recent event with real token counts from the API response
 			p.opts.StatsCollector.UpdateLatestContext(inputTokens, ctxWindow, modelName)
 		}
 	}

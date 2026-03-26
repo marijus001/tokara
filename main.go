@@ -148,6 +148,7 @@ func runServer(cfg config.Config) {
 	p := proxy.New(proxy.Options{
 		Compactor:      comp,
 		ContextSource:  ctxSource,
+		ProjectID:      cfg.ActiveProject,
 		StatsCollector: collector,
 	})
 
